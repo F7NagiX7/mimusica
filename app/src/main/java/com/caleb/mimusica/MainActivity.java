@@ -1,6 +1,8 @@
 package com.caleb.mimusica;
 
 import android.Manifest;
+import android.animation.ArgbEvaluator;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ComponentName;
@@ -10,6 +12,7 @@ import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.database.Cursor;
+import android.graphics.Color;
 import android.graphics.Outline;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -29,6 +32,7 @@ import android.text.style.ForegroundColorSpan;
 import android.text.style.StyleSpan;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
@@ -103,6 +107,12 @@ public class MainActivity extends Activity implements ServiceConnection {
     String emptyText = "Leyendo tu música…";
     boolean dragging;
     int page, tab;
+    static final int DEF_TINT = 0xFF1F3A33;
+    int acc = C_ACC, tint = DEF_TINT;
+    long themeFor = -1;
+    Fade winFade, playerFade, lyrFade;
+    GradientDrawable playBg;
+    ValueAnimator tintAnim;
 
     FrameLayout root, pages, content;
     LinearLayout pageHome, pageSearch, pageLib, homeBox, mini, nav;
@@ -167,6 +177,77 @@ public class MainActivity extends Activity implements ServiceConnection {
         g.setColor(color);
         g.setCornerRadius(r);
         return g;
+    }
+
+    /** "Vidrio" barato: blanco muy transparente con un borde fino. No desenfoca nada. */
+    GradientDrawable glass(int r) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(0x1AFFFFFF);
+        g.setCornerRadius(r);
+        g.setStroke(dp(1), 0x2EFFFFFF);
+        return g;
+    }
+
+    /** Al tocar, la vista se encoge un poquito (solo transformación: casi no cuesta). */
+    void press(View v) {
+        v.setOnTouchListener((vw, e) -> {
+            int a = e.getActionMasked();
+            if (a == MotionEvent.ACTION_DOWN) {
+                vw.animate().scaleX(0.96f).scaleY(0.96f).setDuration(90).start();
+            } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+                vw.animate().scaleX(1f).scaleY(1f).setDuration(140).start();
+            }
+            return false;
+        });
+    }
+
+    /** base = color más vivo de la portada (0 si no hay). Cambia degradado y acento. */
+    void applyTheme(int base) {
+        int nt = DEF_TINT, na = C_ACC;
+        if (base != 0) {
+            float[] hsv = new float[3];
+            Color.colorToHSV(base, hsv);
+            if (hsv[1] >= 0.12f) {
+                float hue = hsv[0], sat = hsv[1];
+                hsv[1] = Math.min(sat, 0.75f);
+                hsv[2] = 0.42f;
+                nt = Color.HSVToColor(hsv);
+                hsv[0] = hue;
+                hsv[1] = Math.max(0.45f, Math.min(sat, 0.85f));
+                hsv[2] = 0.95f;
+                na = Color.HSVToColor(hsv);
+            } else {
+                nt = 0xFF2B2D33;
+            }
+        }
+        acc = na;
+        if (tintAnim != null) tintAnim.cancel();
+        tintAnim = ValueAnimator.ofObject(new ArgbEvaluator(), tint, nt);
+        tintAnim.setDuration(380);
+        tintAnim.addUpdateListener(an -> {
+            tint = (Integer) an.getAnimatedValue();
+            winFade.setTop(tint);
+            playerFade.setTop(tint);
+            lyrFade.setTop(tint);
+        });
+        tintAnim.start();
+        applyAccent();
+    }
+
+    void applyAccent() {
+        if (playBg == null) return;
+        playBg.setColor(acc);
+        miniFill.setBackgroundColor(acc);
+        pSeek.setProgressTintList(ColorStateList.valueOf(acc));
+        if (svc != null) {
+            Track t = svc.current();
+            if (t != null) refreshHeart(t);
+            pShuf.setColorFilter(svc.shuffle ? acc : C_MUT);
+            pRep.setColorFilter(svc.repeat > 0 ? acc : C_MUT);
+        }
+        musicAdapter.notifyDataSetChanged();
+        searchAdapter.notifyDataSetChanged();
+        libAdapter.notifyDataSetChanged();
     }
 
     void round(View v, final int r) {
@@ -270,7 +351,7 @@ public class MainActivity extends Activity implements ServiceConnection {
             Track cur = svc == null ? null : svc.current();
             Art.bind(MainActivity.this, (ImageView) w[0], t, 128);
             ((TextView) w[1]).setText(t.title);
-            ((TextView) w[1]).setTextColor(cur != null && cur.id == t.id ? C_ACC : C_TXT);
+            ((TextView) w[1]).setTextColor(cur != null && cur.id == t.id ? acc : C_TXT);
             ((TextView) w[2]).setText(t.album.isEmpty() ? t.artist : t.artist + " · " + t.album);
             ((TextView) w[3]).setText(fmt((int) t.duration));
             return v;
@@ -297,7 +378,7 @@ public class MainActivity extends Activity implements ServiceConnection {
                 c.setOrientation(LinearLayout.VERTICAL);
                 Sq iv = new Sq(MainActivity.this);
                 if (circular) makeCircle(iv);
-                else round(iv, dp(10));
+                else round(iv, dp(14));
                 c.addView(iv, new LinearLayout.LayoutParams(MATCH, WRAP));
                 TextView a = one(tv("", 13, C_TXT, true));
                 TextView b = one(tv("", 11, C_MUT, false));
@@ -327,11 +408,14 @@ public class MainActivity extends Activity implements ServiceConnection {
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
-        getWindow().setStatusBarColor(C_BG);
+        winFade = new Fade(tint, C_BG, 0.6f);
+        playerFade = new Fade(tint, C_BG, 0.65f);
+        lyrFade = new Fade(tint, C_BG, 1f);
+        getWindow().setBackgroundDrawable(winFade);
+        getWindow().setStatusBarColor(0x00000000);
         getWindow().setNavigationBarColor(C_BG);
 
         root = new FrameLayout(this);
-        root.setBackgroundColor(C_BG);
 
         LinearLayout main = new LinearLayout(this);
         main.setOrientation(LinearLayout.VERTICAL);
@@ -346,7 +430,9 @@ public class MainActivity extends Activity implements ServiceConnection {
         buildMini();
         main.addView(mini);
         buildNav();
-        main.addView(nav);
+        LinearLayout.LayoutParams navp = new LinearLayout.LayoutParams(MATCH, WRAP);
+        navp.setMargins(dp(12), dp(4), dp(12), dp(8));
+        main.addView(nav, navp);
         root.addView(main, new FrameLayout.LayoutParams(MATCH, MATCH));
 
         buildPlayer();
@@ -386,7 +472,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         head.addView(bSearch, new LinearLayout.LayoutParams(dp(44), dp(44)));
         pageHome.addView(head);
 
-        greetTv = tv(greeting(), 26, C_TXT, true);
+        greetTv = tv(greeting(), 30, C_TXT, true);
         greetTv.setPadding(dp(16), dp(14), dp(16), 0);
         pageHome.addView(greetTv);
         TextView sub = tv("Que la música te acompañe hoy.", 14, C_MUT, false);
@@ -403,6 +489,7 @@ public class MainActivity extends Activity implements ServiceConnection {
             TextView c = tv(names[i], 14, C_TXT, false);
             c.setPadding(dp(18), dp(9), dp(18), dp(9));
             c.setOnClickListener(v -> showTab(ti));
+            press(c);
             chips[i] = c;
             LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(WRAP, WRAP);
             cp.rightMargin = dp(8);
@@ -439,7 +526,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     void buildSearch() {
         pageSearch = new LinearLayout(this);
         pageSearch.setOrientation(LinearLayout.VERTICAL);
-        TextView t = tv("Buscar", 24, C_TXT, true);
+        TextView t = tv("Buscar", 30, C_TXT, true);
         t.setPadding(dp(16), dp(16), dp(16), dp(10));
         pageSearch.addView(t);
         q = new EditText(this);
@@ -448,7 +535,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         q.setTextColor(C_TXT);
         q.setTextSize(15);
         q.setSingleLine(true);
-        q.setBackground(rect(C_CARD, dp(24)));
+        q.setBackground(glass(dp(26)));
         q.setPadding(dp(18), dp(12), dp(18), dp(12));
         LinearLayout.LayoutParams qp = new LinearLayout.LayoutParams(MATCH, WRAP);
         qp.setMargins(dp(16), 0, dp(16), dp(8));
@@ -467,7 +554,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     void buildLib() {
         pageLib = new LinearLayout(this);
         pageLib.setOrientation(LinearLayout.VERTICAL);
-        TextView t = tv("Tu biblioteca", 24, C_TXT, true);
+        TextView t = tv("Tu biblioteca", 30, C_TXT, true);
         t.setPadding(dp(16), dp(16), dp(16), 0);
         pageLib.addView(t);
         libInfo = tv("", 13, C_MUT, false);
@@ -486,12 +573,11 @@ public class MainActivity extends Activity implements ServiceConnection {
     void buildMini() {
         mini = new LinearLayout(this);
         mini.setOrientation(LinearLayout.VERTICAL);
-        mini.setPadding(dp(8), dp(4), dp(8), dp(4));
-        mini.setBackgroundColor(C_BG);
+        mini.setPadding(dp(12), dp(4), dp(12), dp(4));
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(rect(C_CARD, dp(12)));
-        round(card, dp(12));
+        card.setBackground(glass(dp(18)));
+        round(card, dp(18));
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(8), dp(8), dp(4), dp(6));
@@ -514,16 +600,18 @@ public class MainActivity extends Activity implements ServiceConnection {
         card.addView(row);
         LinearLayout bar = new LinearLayout(this);
         miniFill = new View(this);
-        miniFill.setBackgroundColor(C_ACC);
+        miniFill.setBackgroundColor(acc);
         miniRest = new View(this);
-        miniRest.setBackgroundColor(0xFF33353D);
+        miniRest.setBackgroundColor(0x33FFFFFF);
         bar.addView(miniFill, new LinearLayout.LayoutParams(0, MATCH, 0f));
         bar.addView(miniRest, new LinearLayout.LayoutParams(0, MATCH, 1f));
         card.addView(bar, new LinearLayout.LayoutParams(MATCH, dp(3)));
         mini.addView(card);
         mini.setVisibility(View.GONE);
         card.setOnClickListener(v -> openPlayer());
+        press(card);
         miniPlay.setOnClickListener(v -> toggle());
+        press(miniPlay);
         mn.setOnClickListener(v -> {
             if (svc != null) svc.next(false);
         });
@@ -531,7 +619,7 @@ public class MainActivity extends Activity implements ServiceConnection {
 
     void buildNav() {
         nav = new LinearLayout(this);
-        nav.setBackgroundColor(C_BG);
+        nav.setBackground(glass(dp(28)));
         int[] ic = {R.drawable.ic_home, R.drawable.ic_search, R.drawable.ic_library};
         String[] lb = {"Inicio", "Buscar", "Tu biblioteca"};
         for (int i = 0; i < 3; i++) {
@@ -550,13 +638,14 @@ public class MainActivity extends Activity implements ServiceConnection {
             nlp.topMargin = dp(2);
             it.addView(navLbl[i], nlp);
             it.setOnClickListener(v -> showPage(pi));
+            press(it);
             nav.addView(it, new LinearLayout.LayoutParams(0, WRAP, 1f));
         }
     }
 
     void buildPlayer() {
         player = new ScrollView(this);
-        player.setBackgroundColor(C_BG);
+        player.setBackground(playerFade);
         player.setFillViewport(true);
         player.setVerticalScrollBarEnabled(false);
         LinearLayout col = new LinearLayout(this);
@@ -586,7 +675,8 @@ public class MainActivity extends Activity implements ServiceConnection {
         DisplayMetrics dm = getResources().getDisplayMetrics();
         int side = Math.min(dm.widthPixels - dp(40), (int) (dm.heightPixels * 0.40f));
         pArt = new ImageView(this);
-        round(pArt, dp(16));
+        round(pArt, dp(20));
+        pArt.setElevation(dp(14));
         LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(side, side);
         ap.gravity = Gravity.CENTER_HORIZONTAL;
         ap.topMargin = dp(14);
@@ -597,7 +687,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         tr.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout tc = new LinearLayout(this);
         tc.setOrientation(LinearLayout.VERTICAL);
-        pTitle = one(tv("", 24, C_TXT, true));
+        pTitle = one(tv("", 26, C_TXT, true));
         pArtist = one(tv("", 16, C_MUT, false));
         tc.addView(pTitle);
         tc.addView(pArtist);
@@ -617,9 +707,9 @@ public class MainActivity extends Activity implements ServiceConnection {
 
         /* barra de tiempo */
         pSeek = new SeekBar(this);
-        pSeek.setProgressTintList(ColorStateList.valueOf(C_ACC));
+        pSeek.setProgressTintList(ColorStateList.valueOf(acc));
         pSeek.setThumbTintList(ColorStateList.valueOf(C_TXT));
-        pSeek.setProgressBackgroundTintList(ColorStateList.valueOf(0xFF3A3C44));
+        pSeek.setProgressBackgroundTintList(ColorStateList.valueOf(0x33FFFFFF));
         col.addView(pSeek, new LinearLayout.LayoutParams(MATCH, WRAP));
         LinearLayout times = new LinearLayout(this);
         times.setPadding(dp(16), 0, dp(16), 0);
@@ -638,35 +728,37 @@ public class MainActivity extends Activity implements ServiceConnection {
         pPlay = ib(R.drawable.ic_play, C_TXT);
         ImageButton next = ib(R.drawable.ic_next, C_TXT);
         pRep = ib(R.drawable.ic_repeat, C_MUT);
-        GradientDrawable ov = new GradientDrawable();
-        ov.setShape(GradientDrawable.OVAL);
-        ov.setColor(0x00000000);
-        ov.setStroke(dp(2), C_TXT);
-        pPlay.setBackground(ov);
-        pPlay.setPadding(dp(18), dp(18), dp(18), dp(18));
+        playBg = new GradientDrawable();
+        playBg.setShape(GradientDrawable.OVAL);
+        playBg.setColor(acc);
+        pPlay.setBackground(playBg);
+        pPlay.setColorFilter(0xFF111111);
+        pPlay.setPadding(dp(17), dp(17), dp(17), dp(17));
+        ctl.setBackground(glass(dp(40)));
+        ctl.setPadding(dp(6), dp(8), dp(6), dp(8));
         ctl.addView(pShuf, new LinearLayout.LayoutParams(0, dp(52), 1f));
         ctl.addView(prev, new LinearLayout.LayoutParams(0, dp(56), 1f));
-        ctl.addView(pPlay, new LinearLayout.LayoutParams(dp(74), dp(74)));
+        ctl.addView(pPlay, new LinearLayout.LayoutParams(dp(66), dp(66)));
         ctl.addView(next, new LinearLayout.LayoutParams(0, dp(56), 1f));
         ctl.addView(pRep, new LinearLayout.LayoutParams(0, dp(52), 1f));
         LinearLayout.LayoutParams cpp = new LinearLayout.LayoutParams(MATCH, WRAP);
-        cpp.topMargin = dp(8);
+        cpp.topMargin = dp(14);
         col.addView(ctl, cpp);
 
         /* letra */
         lyricsCard = new LinearLayout(this);
         lyricsCard.setOrientation(LinearLayout.VERTICAL);
-        lyricsCard.setBackground(rect(C_CARD, dp(16)));
-        lyricsCard.setPadding(dp(16), dp(10), dp(8), dp(16));
+        lyricsCard.setBackground(glass(dp(22)));
+        lyricsCard.setPadding(dp(18), dp(12), dp(10), dp(18));
         LinearLayout lh = new LinearLayout(this);
         lh.setGravity(Gravity.CENTER_VERTICAL);
         lh.addView(tv("Letra", 13, C_TXT, true), new LinearLayout.LayoutParams(0, WRAP, 1f));
         ImageButton lx = ib(R.drawable.ic_expand, C_MUT);
         lh.addView(lx, new LinearLayout.LayoutParams(dp(40), dp(40)));
         lyricsCard.addView(lh);
-        lyrBody = tv("", 17, C_MUT, false);
-        lyrBody.setLineSpacing(dp(4), 1f);
-        lyrBody.setMaxLines(8);
+        lyrBody = tv("", 19, 0x66FFFFFF, true);
+        lyrBody.setLineSpacing(dp(5), 1f);
+        lyrBody.setMaxLines(6);
         lyrBody.setEllipsize(TextUtils.TruncateAt.END);
         lyrBody.setPadding(0, 0, dp(8), 0);
         lyricsCard.addView(lyrBody);
@@ -680,7 +772,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         /* a continuación */
         nextCard = new LinearLayout(this);
         nextCard.setOrientation(LinearLayout.VERTICAL);
-        nextCard.setBackground(rect(C_CARD, dp(16)));
+        nextCard.setBackground(glass(dp(22)));
         nextCard.setPadding(dp(14), dp(12), dp(14), dp(12));
         nextCard.addView(tv("A continuación", 12, C_MUT, true));
         LinearLayout nr = new LinearLayout(this);
@@ -707,6 +799,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         player.addView(col);
 
         pPlay.setOnClickListener(v -> toggle());
+        press(pPlay);
         next.setOnClickListener(v -> {
             if (svc != null) svc.next(false);
         });
@@ -742,7 +835,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     void buildLyricsFull() {
         lyrBox = new LinearLayout(this);
         lyrBox.setOrientation(LinearLayout.VERTICAL);
-        lyrBox.setBackgroundColor(C_BG);
+        lyrBox.setBackground(lyrFade);
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(dp(8), dp(8), dp(8), dp(4));
@@ -756,8 +849,8 @@ public class MainActivity extends Activity implements ServiceConnection {
         lyrBox.addView(top);
         lyrScroll = new ScrollView(this);
         lyrScroll.setVerticalScrollBarEnabled(false);
-        lyrFullTv = tv("", 22, C_MUT, false);
-        lyrFullTv.setLineSpacing(dp(8), 1f);
+        lyrFullTv = tv("", 28, 0x59FFFFFF, true);
+        lyrFullTv.setLineSpacing(dp(10), 1f);
         lyrFullTv.setPadding(dp(24), dp(16), dp(24), dp(120));
         lyrScroll.addView(lyrFullTv);
         lyrBox.addView(lyrScroll, new LinearLayout.LayoutParams(MATCH, 0, 1f));
@@ -811,11 +904,11 @@ public class MainActivity extends Activity implements ServiceConnection {
         int idx = lyr.times == null ? -1 : lyr.indexAt(svc.pos());
         if (!force && idx == lyrIdx) return;
         lyrIdx = idx;
-        int base = lyr.times == null ? 0xFFD0D2D8 : C_MUT;
+        int base = lyr.times == null ? 0xF2FFFFFF : 0x66FFFFFF;
         lyrBody.setTextColor(base);
         lyrBody.setText(lyrText(idx, false));
         if (lyricsOpen()) {
-            lyrFullTv.setTextColor(lyr.times == null ? 0xFFE0E2E8 : C_MUT);
+            lyrFullTv.setTextColor(lyr.times == null ? 0xFFFFFFFF : 0x59FFFFFF);
             lyrFullTv.setText(lyrText(idx, true));
             final int off = lyrCur;
             if (off >= 0) {
@@ -917,7 +1010,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     }
 
     void styleChip(TextView t, boolean on) {
-        t.setBackground(rect(on ? 0xFFFFFFFF : C_CHIP, dp(20)));
+        t.setBackground(on ? rect(0xFFFFFFFF, dp(20)) : glass(dp(20)));
         t.setTextColor(on ? 0xFF000000 : C_TXT);
     }
 
@@ -963,7 +1056,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         LinearLayout r = new LinearLayout(this);
         r.setGravity(Gravity.CENTER_VERTICAL);
         r.setPadding(dp(16), dp(18), dp(16), dp(10));
-        r.addView(tv(title, 17, C_TXT, true), new LinearLayout.LayoutParams(0, WRAP, 1f));
+        r.addView(tv(title, 19, C_TXT, true), new LinearLayout.LayoutParams(0, WRAP, 1f));
         TextView all2 = tv("Ver todo", 12, C_MUT, false);
         all2.setPadding(dp(8), dp(4), 0, dp(4));
         all2.setOnClickListener(v -> seeAll.run());
@@ -991,7 +1084,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
         ImageView iv = new ImageView(this);
-        round(iv, dp(10));
+        round(iv, dp(14));
         Art.bind(this, iv, art, 320);
         c.addView(iv, new LinearLayout.LayoutParams(dp(110), dp(110)));
         TextView a = one(tv(t1, 13, C_TXT, true));
@@ -1001,6 +1094,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         c.addView(a, ap);
         c.addView(b, new LinearLayout.LayoutParams(MATCH, WRAP));
         c.setOnClickListener(ck);
+        press(c);
         return c;
     }
 
@@ -1018,6 +1112,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         ap.topMargin = dp(8);
         c.addView(a, ap);
         c.setOnClickListener(v -> playGroup(g));
+        press(c);
         return c;
     }
 
@@ -1031,7 +1126,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         b.addView(t);
         TextView bt = tv("Buscar música otra vez", 14, 0xFF000000, true);
         bt.setPadding(dp(20), dp(10), dp(20), dp(10));
-        bt.setBackground(rect(C_ACC, dp(22)));
+        bt.setBackground(rect(acc, dp(22)));
         bt.setOnClickListener(v -> ask());
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(WRAP, WRAP);
         lp.topMargin = dp(18);
@@ -1292,7 +1387,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     void refreshHeart(Track t) {
         boolean f = Store.isFav(this, t.id);
         pHeart.setImageResource(f ? R.drawable.ic_heart : R.drawable.ic_heart_o);
-        pHeart.setColorFilter(f ? C_ACC : C_TXT);
+        pHeart.setColorFilter(f ? acc : C_TXT);
     }
 
     void refresh() {
@@ -1308,6 +1403,13 @@ public class MainActivity extends Activity implements ServiceConnection {
             pArtist.setText(t.artist);
             pSource.setText(svc.source);
             Art.bind(this, pArt, t, 700);
+            if (t.id != themeFor) {
+                themeFor = t.id;
+                final Track tt = t;
+                Art.color(this, tt, col -> {
+                    if (themeFor == tt.id) applyTheme(col);
+                });
+            }
             refreshHeart(t);
             loadLyrics(t);
             Track n = svc.nextTrack();
@@ -1323,9 +1425,9 @@ public class MainActivity extends Activity implements ServiceConnection {
         int icon = pl ? R.drawable.ic_pause : R.drawable.ic_play;
         miniPlay.setImageResource(icon);
         pPlay.setImageResource(icon);
-        pShuf.setColorFilter(svc.shuffle ? C_ACC : C_MUT);
+        pShuf.setColorFilter(svc.shuffle ? acc : C_MUT);
         pRep.setImageResource(svc.repeat == 2 ? R.drawable.ic_repeat_one : R.drawable.ic_repeat);
-        pRep.setColorFilter(svc.repeat > 0 ? C_ACC : C_MUT);
+        pRep.setColorFilter(svc.repeat > 0 ? acc : C_MUT);
         musicAdapter.notifyDataSetChanged();
         searchAdapter.notifyDataSetChanged();
         libAdapter.notifyDataSetChanged();

@@ -4,6 +4,7 @@ import android.content.ContentUris;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
@@ -150,5 +151,78 @@ final class Art {
             } catch (Exception ignored) { }
         }
         return null;
+    }
+
+    /* ---------- Color más vivo de la portada (para el degradado y el acento) ---------- */
+
+    interface ColorCb {
+        void done(int color);
+    }
+
+    private static final LruCache<Long, Integer> COLORS = new LruCache<>(128);
+
+    private static long colorKey(Track t) {
+        return t.albumId > 0 ? t.albumId : -t.id;
+    }
+
+    /** Lo calcula una sola vez por álbum y lo recuerda. Devuelve 0 si no hay portada o es gris. */
+    static void color(Context ctx, final Track t, final ColorCb cb) {
+        final long key = colorKey(t);
+        Integer c = COLORS.get(key);
+        if (c != null) {
+            cb.done(c);
+            return;
+        }
+        final Context app = ctx.getApplicationContext();
+        EX.execute(new Runnable() {
+            @Override
+            public void run() {
+                int col = 0;
+                try {
+                    Bitmap b = decode(app, t, 96);
+                    if (b != null) col = vivid(b);
+                } catch (Exception ignored) { }
+                final int res = col;
+                MAIN.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        COLORS.put(key, res);
+                        cb.done(res);
+                    }
+                });
+            }
+        });
+    }
+
+    private static int vivid(Bitmap src) {
+        Bitmap b = src;
+        if (Build.VERSION.SDK_INT >= 26 && b.getConfig() == Bitmap.Config.HARDWARE) {
+            b = b.copy(Bitmap.Config.ARGB_8888, false);
+            if (b == null) return 0;
+        }
+        Bitmap s = Bitmap.createScaledBitmap(b, 12, 12, true);
+        int[] px = new int[144];
+        s.getPixels(px, 0, 12, 0, 0, 12, 12);
+        float[] hsv = new float[3];
+        float[] ws = new float[12], hh = new float[12], ss = new float[12], vv = new float[12];
+        for (int p : px) {
+            Color.colorToHSV(p, hsv);
+            if (hsv[2] < 0.15f) continue;
+            float w = hsv[1] * hsv[2] + 0.02f;
+            int k = Math.min(11, (int) (hsv[0] / 30f));
+            ws[k] += w;
+            hh[k] += hsv[0] * w;
+            ss[k] += hsv[1] * w;
+            vv[k] += hsv[2] * w;
+        }
+        int best = 0;
+        for (int k = 1; k < 12; k++) {
+            if (ws[k] > ws[best]) best = k;
+        }
+        if (ws[best] <= 0f) return 0;
+        hsv[0] = hh[best] / ws[best];
+        hsv[1] = ss[best] / ws[best];
+        hsv[2] = vv[best] / ws[best];
+        return Color.HSVToColor(hsv);
     }
 }
