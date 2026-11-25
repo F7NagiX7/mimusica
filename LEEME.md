@@ -29,3 +29,7 @@ Al abrir, concede el permiso de música (y el de notificaciones en Android 13+).
 - Solo mantiene una canción cargada en memoria a la vez.
 
 Requiere Android 6.0 o superior.
+
+## Actualizar a una versión nueva
+
+Cada compilación de GitHub firma el APK con una llave distinta, así que Android no deja instalar una versión encima de otra. Antes de instalar el APK nuevo, desinstala la app anterior (mantén pulsado el icono → Desinstalar). Tu música no se borra; solo se pierden las favoritas y el historial de la app.

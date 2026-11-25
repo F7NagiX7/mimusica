@@ -53,6 +53,7 @@ public class PlayerService extends Service
     Runnable onChange;
     boolean shuffle;
     int repeat; // 0 = no repetir, 1 = toda la lista, 2 = una canción
+    String source = "Mi música";
 
     private ArrayList<Track> queue = new ArrayList<>();
     private int idx = -1;
@@ -146,9 +147,17 @@ public class PlayerService extends Service
 
     /* ---------- Control ---------- */
 
-    void playQueue(ArrayList<Track> q, int pos) {
+    void playQueue(ArrayList<Track> q, int pos, String src) {
         queue = q;
+        source = src;
         start(pos);
+    }
+
+    /** Canción que sigue, o null si no se puede saber (aleatorio) o es la última. */
+    Track nextTrack() {
+        if (shuffle || queue.isEmpty() || idx < 0) return null;
+        if (idx + 1 < queue.size()) return queue.get(idx + 1);
+        return repeat == 1 ? queue.get(0) : null;
     }
 
     private void start(int i) {
@@ -167,6 +176,7 @@ public class PlayerService extends Service
             prepared = true;
             if (requestFocus()) {
                 mp.start();
+                Store.played(this, queue.get(i));
                 fails = 0;
                 resumeOnFocus = false;
                 if (!fg) goForeground();
