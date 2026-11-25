@@ -12,8 +12,10 @@ final class Track {
     final String title;
     final String artist;
     final String album;
+    final String folder;
 
-    Track(long id, String title, String artist, String album, long albumId, long duration, int trackNo) {
+    Track(long id, String title, String artist, String album, long albumId, long duration,
+          int trackNo, String folder) {
         this.id = id;
         this.title = (title == null || title.isEmpty()) ? "Sin título" : title;
         this.artist = artist == null ? "Artista desconocido" : artist;
@@ -21,6 +23,7 @@ final class Track {
         this.albumId = albumId;
         this.duration = duration;
         this.trackNo = trackNo;
+        this.folder = folder == null ? "" : folder;
     }
 
     Uri uri() {

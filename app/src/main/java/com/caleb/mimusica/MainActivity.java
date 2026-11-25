@@ -2,6 +2,7 @@ package com.caleb.mimusica;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -19,8 +20,13 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.text.Editable;
+import android.text.Layout;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
@@ -47,6 +53,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity implements ServiceConnection {
 
@@ -80,6 +88,12 @@ public class MainActivity extends Activity implements ServiceConnection {
     final ArrayList<Track> all = new ArrayList<>(), searchRes = new ArrayList<>(), favs = new ArrayList<>();
     final HashMap<Long, Track> byId = new HashMap<>();
     final ArrayList<Group> albums = new ArrayList<>(), artists = new ArrayList<>();
+    final ArrayList<Track> raw = new ArrayList<>();
+    final LinkedHashMap<String, Integer> folderCount = new LinkedHashMap<>();
+    final ExecutorService lyrEx = Executors.newSingleThreadExecutor();
+    Lyrics.Doc lyr;
+    long lyrFor = -1;
+    int lyrIdx = -2, lyrCur = -1;
     final Handler h = new Handler(Looper.getMainLooper());
     final TextView[] chips = new TextView[4];
     final ImageView[] navIcon = new ImageView[3];
@@ -104,7 +118,9 @@ public class MainActivity extends Activity implements ServiceConnection {
     TextView miniTitle, miniSub, pSource, pTitle, pArtist, pCur, pDur, nTitle, nArtist;
     ImageButton miniPlay, pPlay, pShuf, pRep, pHeart;
     View miniFill, miniRest;
-    LinearLayout nextCard;
+    LinearLayout nextCard, lyricsCard, lyrBox;
+    ScrollView lyrScroll;
+    TextView lyrBody, lyrFullTv, lyrTitle;
     SeekBar pSeek;
 
     final Runnable ticker = new Runnable() {
@@ -336,6 +352,8 @@ public class MainActivity extends Activity implements ServiceConnection {
         buildPlayer();
         root.addView(player, new FrameLayout.LayoutParams(MATCH, MATCH));
         player.setVisibility(View.GONE);
+        buildLyricsFull();
+        root.addView(lyrBox, new FrameLayout.LayoutParams(MATCH, MATCH));
 
         setContentView(root);
         showPage(0);
@@ -361,6 +379,9 @@ public class MainActivity extends Activity implements ServiceConnection {
         bRef.setOnClickListener(v -> ask());
         ImageButton bSearch = ib(R.drawable.ic_search, C_TXT);
         bSearch.setOnClickListener(v -> showPage(1));
+        ImageButton bFolder = ib(R.drawable.ic_folder, C_TXT);
+        bFolder.setOnClickListener(v -> pickFolders());
+        head.addView(bFolder, new LinearLayout.LayoutParams(dp(44), dp(44)));
         head.addView(bRef, new LinearLayout.LayoutParams(dp(44), dp(44)));
         head.addView(bSearch, new LinearLayout.LayoutParams(dp(44), dp(44)));
         pageHome.addView(head);
@@ -523,8 +544,11 @@ public class MainActivity extends Activity implements ServiceConnection {
             ivn.setImageResource(ic[i]);
             navIcon[i] = ivn;
             navLbl[i] = tv(lb[i], 11, C_MUT, false);
+            navLbl[i].setGravity(Gravity.CENTER);
             it.addView(ivn, new LinearLayout.LayoutParams(dp(24), dp(24)));
-            it.addView(navLbl[i]);
+            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(MATCH, WRAP);
+            nlp.topMargin = dp(2);
+            it.addView(navLbl[i], nlp);
             it.setOnClickListener(v -> showPage(pi));
             nav.addView(it, new LinearLayout.LayoutParams(0, WRAP, 1f));
         }
@@ -548,9 +572,12 @@ public class MainActivity extends Activity implements ServiceConnection {
         LinearLayout mid = new LinearLayout(this);
         mid.setOrientation(LinearLayout.VERTICAL);
         mid.setGravity(Gravity.CENTER_HORIZONTAL);
-        mid.addView(tv("Reproduciendo desde", 11, C_MUT, false));
+        TextView fromLbl = tv("Reproduciendo desde", 11, C_MUT, false);
+        fromLbl.setGravity(Gravity.CENTER);
+        mid.addView(fromLbl, new LinearLayout.LayoutParams(MATCH, WRAP));
         pSource = one(tv("", 13, C_TXT, true));
-        mid.addView(pSource);
+        pSource.setGravity(Gravity.CENTER);
+        mid.addView(pSource, new LinearLayout.LayoutParams(MATCH, WRAP));
         top.addView(mid, new LinearLayout.LayoutParams(0, WRAP, 1f));
         top.addView(new View(this), new LinearLayout.LayoutParams(dp(44), dp(44)));
         col.addView(top);
@@ -626,6 +653,30 @@ public class MainActivity extends Activity implements ServiceConnection {
         cpp.topMargin = dp(8);
         col.addView(ctl, cpp);
 
+        /* letra */
+        lyricsCard = new LinearLayout(this);
+        lyricsCard.setOrientation(LinearLayout.VERTICAL);
+        lyricsCard.setBackground(rect(C_CARD, dp(16)));
+        lyricsCard.setPadding(dp(16), dp(10), dp(8), dp(16));
+        LinearLayout lh = new LinearLayout(this);
+        lh.setGravity(Gravity.CENTER_VERTICAL);
+        lh.addView(tv("Letra", 13, C_TXT, true), new LinearLayout.LayoutParams(0, WRAP, 1f));
+        ImageButton lx = ib(R.drawable.ic_expand, C_MUT);
+        lh.addView(lx, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        lyricsCard.addView(lh);
+        lyrBody = tv("", 17, C_MUT, false);
+        lyrBody.setLineSpacing(dp(4), 1f);
+        lyrBody.setMaxLines(8);
+        lyrBody.setEllipsize(TextUtils.TruncateAt.END);
+        lyrBody.setPadding(0, 0, dp(8), 0);
+        lyricsCard.addView(lyrBody);
+        lyricsCard.setVisibility(View.GONE);
+        lyricsCard.setOnClickListener(v -> openLyrics());
+        lx.setOnClickListener(v -> openLyrics());
+        LinearLayout.LayoutParams lcp = new LinearLayout.LayoutParams(MATCH, WRAP);
+        lcp.topMargin = dp(18);
+        col.addView(lyricsCard, lcp);
+
         /* a continuación */
         nextCard = new LinearLayout(this);
         nextCard.setOrientation(LinearLayout.VERTICAL);
@@ -684,6 +735,160 @@ public class MainActivity extends Activity implements ServiceConnection {
                 if (svc != null) svc.seekTo(s.getProgress());
             }
         });
+    }
+
+    /* ====================== Letra ====================== */
+
+    void buildLyricsFull() {
+        lyrBox = new LinearLayout(this);
+        lyrBox.setOrientation(LinearLayout.VERTICAL);
+        lyrBox.setBackgroundColor(C_BG);
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(8), dp(8), dp(8), dp(4));
+        ImageButton close = ib(R.drawable.ic_down, C_TXT);
+        close.setOnClickListener(v -> closeLyrics());
+        top.addView(close, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        lyrTitle = one(tv("Letra", 15, C_TXT, true));
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, WRAP, 1f);
+        tp.leftMargin = dp(8);
+        top.addView(lyrTitle, tp);
+        lyrBox.addView(top);
+        lyrScroll = new ScrollView(this);
+        lyrScroll.setVerticalScrollBarEnabled(false);
+        lyrFullTv = tv("", 22, C_MUT, false);
+        lyrFullTv.setLineSpacing(dp(8), 1f);
+        lyrFullTv.setPadding(dp(24), dp(16), dp(24), dp(120));
+        lyrScroll.addView(lyrFullTv);
+        lyrBox.addView(lyrScroll, new LinearLayout.LayoutParams(MATCH, 0, 1f));
+        lyrBox.setVisibility(View.GONE);
+    }
+
+    boolean lyricsOpen() {
+        return lyrBox.getVisibility() == View.VISIBLE;
+    }
+
+    void openLyrics() {
+        if (lyr == null) return;
+        Track t = svc == null ? null : svc.current();
+        lyrTitle.setText(t == null ? "Letra" : t.title + " — " + t.artist);
+        lyrBox.setVisibility(View.VISIBLE);
+        lyrBox.setTranslationY(root.getHeight());
+        lyrBox.animate().translationY(0).setDuration(220).start();
+        renderLyrics(true);
+    }
+
+    void closeLyrics() {
+        lyrBox.animate().translationY(root.getHeight()).setDuration(200)
+                .withEndAction(() -> lyrBox.setVisibility(View.GONE)).start();
+    }
+
+    /** Texto de la letra; la línea que suena va en blanco y negrita. */
+    CharSequence lyrText(int idx, boolean full) {
+        SpannableStringBuilder sb = new SpannableStringBuilder();
+        int n = lyr.lines.length;
+        int from = 0, to = n;
+        if (!full && lyr.times != null) {
+            from = Math.max(0, idx - 1);
+            to = Math.min(n, from + 6);
+        }
+        lyrCur = -1;
+        for (int i = from; i < to; i++) {
+            int st = sb.length();
+            sb.append(lyr.lines[i]);
+            if (i == idx) {
+                sb.setSpan(new ForegroundColorSpan(C_TXT), st, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                sb.setSpan(new StyleSpan(Typeface.BOLD), st, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                lyrCur = st;
+            }
+            if (i < to - 1) sb.append('\n');
+        }
+        return sb;
+    }
+
+    void renderLyrics(boolean force) {
+        if (lyr == null || svc == null) return;
+        int idx = lyr.times == null ? -1 : lyr.indexAt(svc.pos());
+        if (!force && idx == lyrIdx) return;
+        lyrIdx = idx;
+        int base = lyr.times == null ? 0xFFD0D2D8 : C_MUT;
+        lyrBody.setTextColor(base);
+        lyrBody.setText(lyrText(idx, false));
+        if (lyricsOpen()) {
+            lyrFullTv.setTextColor(lyr.times == null ? 0xFFE0E2E8 : C_MUT);
+            lyrFullTv.setText(lyrText(idx, true));
+            final int off = lyrCur;
+            if (off >= 0) {
+                lyrFullTv.post(() -> {
+                    Layout lay = lyrFullTv.getLayout();
+                    if (lay == null) return;
+                    int y = lay.getLineTop(lay.getLineForOffset(off));
+                    lyrScroll.smoothScrollTo(0, Math.max(0, y - lyrScroll.getHeight() / 3));
+                });
+            }
+        }
+    }
+
+    /** Busca la letra dentro del archivo de la canción (en segundo plano). */
+    void loadLyrics(final Track t) {
+        if (t.id == lyrFor) return;
+        lyrFor = t.id;
+        lyr = null;
+        lyrIdx = -2;
+        lyricsCard.setVisibility(View.GONE);
+        if (lyricsOpen()) closeLyrics();
+        lyrEx.execute(() -> {
+            Lyrics.Doc d = null;
+            try (java.io.InputStream in = getContentResolver().openInputStream(t.uri())) {
+                if (in != null) {
+                    String txt = Lyrics.read(in);
+                    if (txt != null) d = Lyrics.parse(txt);
+                }
+            } catch (Exception ignored) { }
+            final Lyrics.Doc fd = d;
+            h.post(() -> {
+                if (lyrFor != t.id) return;
+                lyr = fd;
+                if (fd == null) return;
+                lyricsCard.setVisibility(View.VISIBLE);
+                renderLyrics(true);
+            });
+        });
+    }
+
+    /* ====================== Carpetas ====================== */
+
+    static String folderOf(String path) {
+        int i = path == null ? -1 : path.lastIndexOf('/');
+        return i > 0 ? path.substring(0, i) : "";
+    }
+
+    static String folderLabel(String dir) {
+        String s = dir.replaceFirst("^/storage/emulated/\\d+/?", "");
+        if (s.equals(dir)) s = dir.replaceFirst("^/storage/([^/]+)/?", "SD · ");
+        return s.isEmpty() ? "Almacenamiento interno (raíz)" : s;
+    }
+
+    void pickFolders() {
+        if (folderCount.isEmpty()) return;
+        final ArrayList<String> paths = new ArrayList<>(folderCount.keySet());
+        Collections.sort(paths, (a, b) -> folderLabel(a).compareToIgnoreCase(folderLabel(b)));
+        HashMap<String, Boolean> on = Store.folderStates(this, paths);
+        String[] labels = new String[paths.size()];
+        final boolean[] checked = new boolean[paths.size()];
+        for (int i = 0; i < paths.size(); i++) {
+            labels[i] = folderLabel(paths.get(i)) + "  (" + folderCount.get(paths.get(i)) + ")";
+            checked[i] = on.get(paths.get(i));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("¿Qué carpetas son tu música?")
+                .setMultiChoiceItems(labels, checked, (d, which, isChecked) -> checked[which] = isChecked)
+                .setPositiveButton("Aplicar", (d, w) -> {
+                    Store.setFolders(this, paths, checked);
+                    applyLibrary();
+                })
+                .setNegativeButton("Cancelar", null)
+                .show();
     }
 
     /* ====================== Navegación ====================== */
@@ -745,7 +950,8 @@ public class MainActivity extends Activity implements ServiceConnection {
 
     @Override
     public void onBackPressed() {
-        if (playerOpen()) closePlayer();
+        if (lyricsOpen()) closeLyrics();
+        else if (playerOpen()) closePlayer();
         else if (page != 0) showPage(0);
         else if (tab != 0) showTab(0);
         else moveTaskToBack(true);
@@ -997,7 +1203,7 @@ public class MainActivity extends Activity implements ServiceConnection {
                     new String[]{MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE,
                             MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM,
                             MediaStore.Audio.Media.ALBUM_ID, MediaStore.Audio.Media.DURATION,
-                            MediaStore.Audio.Media.TRACK},
+                            MediaStore.Audio.Media.TRACK, MediaStore.Audio.Media.DATA},
                     sel, null, MediaStore.Audio.Media.TITLE + " COLLATE NOCASE ASC")) {
                 if (c != null) {
                     while (c.moveToNext()) {
@@ -1006,17 +1212,29 @@ public class MainActivity extends Activity implements ServiceConnection {
                         String al = c.getString(3);
                         if (al == null || al.equals("<unknown>")) al = "";
                         r.add(new Track(c.getLong(0), c.getString(1), ar, al,
-                                c.getLong(4), c.getLong(5), c.getInt(6)));
+                                c.getLong(4), c.getLong(5), c.getInt(6), folderOf(c.getString(7))));
                     }
                 }
             } catch (Exception ignored) { }
-            h.post(() -> applyLibrary(r));
+            h.post(() -> {
+                raw.clear();
+                raw.addAll(r);
+                applyLibrary();
+            });
         }).start();
     }
 
-    void applyLibrary(ArrayList<Track> r) {
+    void applyLibrary() {
+        folderCount.clear();
+        for (Track t : raw) {
+            Integer n = folderCount.get(t.folder);
+            folderCount.put(t.folder, n == null ? 1 : n + 1);
+        }
+        HashMap<String, Boolean> on = Store.folderStates(this, folderCount.keySet());
         all.clear();
-        all.addAll(r);
+        for (Track t : raw) {
+            if (on.get(t.folder)) all.add(t);
+        }
         byId.clear();
         for (Track t : all) byId.put(t.id, t);
 
@@ -1056,7 +1274,10 @@ public class MainActivity extends Activity implements ServiceConnection {
             return d != 0 ? d : x.name.compareToIgnoreCase(y.name);
         });
 
-        emptyText = all.isEmpty() ? "No encontré música en tu teléfono." : "";
+        emptyText = all.isEmpty()
+                ? (raw.isEmpty() ? "No encontré música en tu teléfono."
+                : "No hay canciones en las carpetas activas.\nToca el icono de carpeta (arriba) para elegir cuáles usar.")
+                : "";
         musicAdapter.notifyDataSetChanged();
         albumAdapter.notifyDataSetChanged();
         artistAdapter.notifyDataSetChanged();
@@ -1088,6 +1309,7 @@ public class MainActivity extends Activity implements ServiceConnection {
             pSource.setText(svc.source);
             Art.bind(this, pArt, t, 700);
             refreshHeart(t);
+            loadLyrics(t);
             Track n = svc.nextTrack();
             nextCard.setVisibility(n == null ? View.GONE : View.VISIBLE);
             if (n != null) {
@@ -1120,6 +1342,7 @@ public class MainActivity extends Activity implements ServiceConnection {
 
     void tick() {
         if (svc == null) return;
+        if (lyr != null && (playerOpen() || lyricsOpen())) renderLyrics(false);
         int d = svc.dur(), p = svc.pos();
         if (mini.getVisibility() == View.VISIBLE) {
             float f = d > 0 ? Math.min(1f, (float) p / d) : 0f;
