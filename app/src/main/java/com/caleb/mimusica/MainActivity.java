@@ -36,6 +36,9 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
+import android.view.animation.AccelerateInterpolator;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.LinearInterpolator;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.BaseAdapter;
 import android.widget.EditText;
@@ -113,6 +116,8 @@ public class MainActivity extends Activity implements ServiceConnection {
     Fade winFade, playerFade, lyrFade;
     GradientDrawable playBg;
     ValueAnimator tintAnim;
+    boolean lastPl;
+    final LinearInterpolator lin = new LinearInterpolator();
 
     FrameLayout root, pages, content;
     LinearLayout pageHome, pageSearch, pageLib, homeBox, mini, nav;
@@ -137,7 +142,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         @Override
         public void run() {
             tick();
-            h.postDelayed(this, 500);
+            h.postDelayed(this, 300);
         }
     };
 
@@ -179,6 +184,23 @@ public class MainActivity extends Activity implements ServiceConnection {
         return g;
     }
 
+    /** Aparece con un fundido y un leve deslizamiento hacia arriba. */
+    void fadeIn(View v, long delay) {
+        v.animate().cancel();
+        v.setAlpha(0f);
+        v.setTranslationY(dp(12));
+        v.animate().alpha(1f).translationY(0f).setStartDelay(delay).setDuration(260)
+                .setInterpolator(new DecelerateInterpolator()).start();
+    }
+
+    /** Un pulso corto para confirmar un toque (play, corazón, aleatorio, repetir). */
+    void pop(final View v) {
+        v.animate().cancel();
+        v.animate().scaleX(0.82f).scaleY(0.82f).setStartDelay(0).setDuration(70)
+                .withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(160)
+                        .setInterpolator(new DecelerateInterpolator()).start()).start();
+    }
+
     /** "Vidrio" barato: blanco muy transparente con un borde fino. No desenfoca nada. */
     GradientDrawable glass(int r) {
         GradientDrawable g = new GradientDrawable();
@@ -193,9 +215,9 @@ public class MainActivity extends Activity implements ServiceConnection {
         v.setOnTouchListener((vw, e) -> {
             int a = e.getActionMasked();
             if (a == MotionEvent.ACTION_DOWN) {
-                vw.animate().scaleX(0.96f).scaleY(0.96f).setDuration(90).start();
+                vw.animate().scaleX(0.96f).scaleY(0.96f).setStartDelay(0).setDuration(90).start();
             } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
-                vw.animate().scaleX(1f).scaleY(1f).setDuration(140).start();
+                vw.animate().scaleX(1f).scaleY(1f).setStartDelay(0).setDuration(140).start();
             }
             return false;
         });
@@ -598,13 +620,15 @@ public class MainActivity extends Activity implements ServiceConnection {
         row.addView(miniPlay, new LinearLayout.LayoutParams(dp(44), dp(44)));
         row.addView(mn, new LinearLayout.LayoutParams(dp(44), dp(44)));
         card.addView(row);
-        LinearLayout bar = new LinearLayout(this);
-        miniFill = new View(this);
-        miniFill.setBackgroundColor(acc);
+        FrameLayout bar = new FrameLayout(this);
         miniRest = new View(this);
         miniRest.setBackgroundColor(0x33FFFFFF);
-        bar.addView(miniFill, new LinearLayout.LayoutParams(0, MATCH, 0f));
-        bar.addView(miniRest, new LinearLayout.LayoutParams(0, MATCH, 1f));
+        miniFill = new View(this);
+        miniFill.setBackgroundColor(acc);
+        miniFill.setPivotX(0f);
+        miniFill.setScaleX(0f);
+        bar.addView(miniRest, new FrameLayout.LayoutParams(MATCH, MATCH));
+        bar.addView(miniFill, new FrameLayout.LayoutParams(MATCH, MATCH));
         card.addView(bar, new LinearLayout.LayoutParams(MATCH, dp(3)));
         mini.addView(card);
         mini.setVisibility(View.GONE);
@@ -698,6 +722,8 @@ public class MainActivity extends Activity implements ServiceConnection {
             if (t == null) return;
             Store.toggleFav(this, t.id);
             refreshHeart(t);
+            pop(pHeart);
+            svc.syncSession();
             if (page == 2) loadFavs();
         });
         tr.addView(pHeart, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -808,14 +834,14 @@ public class MainActivity extends Activity implements ServiceConnection {
         });
         pShuf.setOnClickListener(v -> {
             if (svc != null) {
-                svc.shuffle = !svc.shuffle;
-                refresh();
+                svc.toggleShuffle();
+                pop(pShuf);
             }
         });
         pRep.setOnClickListener(v -> {
             if (svc != null) {
-                svc.repeat = (svc.repeat + 1) % 3;
-                refresh();
+                svc.cycleRepeat();
+                pop(pRep);
             }
         });
         pSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -867,12 +893,15 @@ public class MainActivity extends Activity implements ServiceConnection {
         lyrTitle.setText(t == null ? "Letra" : t.title + " — " + t.artist);
         lyrBox.setVisibility(View.VISIBLE);
         lyrBox.setTranslationY(root.getHeight());
-        lyrBox.animate().translationY(0).setDuration(220).start();
+        lyrBox.animate().cancel();
+        lyrBox.animate().translationY(0).setStartDelay(0).setDuration(300)
+                .setInterpolator(new DecelerateInterpolator(1.6f)).start();
         renderLyrics(true);
     }
 
     void closeLyrics() {
-        lyrBox.animate().translationY(root.getHeight()).setDuration(200)
+        lyrBox.animate().translationY(root.getHeight()).setStartDelay(0).setDuration(240)
+                .setInterpolator(new AccelerateInterpolator(1.2f))
                 .withEndAction(() -> lyrBox.setVisibility(View.GONE)).start();
     }
 
@@ -987,10 +1016,12 @@ public class MainActivity extends Activity implements ServiceConnection {
     /* ====================== Navegación ====================== */
 
     void showPage(int p) {
+        int old = page;
         page = p;
         pageHome.setVisibility(p == 0 ? View.VISIBLE : View.GONE);
         pageSearch.setVisibility(p == 1 ? View.VISIBLE : View.GONE);
         pageLib.setVisibility(p == 2 ? View.VISIBLE : View.GONE);
+        if (p != old) fadeIn(p == 0 ? pageHome : (p == 1 ? pageSearch : pageLib), 0);
         for (int i = 0; i < 3; i++) {
             int col = i == p ? C_TXT : C_MUT;
             navIcon[i].setColorFilter(col);
@@ -1015,13 +1046,15 @@ public class MainActivity extends Activity implements ServiceConnection {
     }
 
     void showTab(int i) {
+        int old = tab;
         tab = i;
         for (int k = 0; k < 4; k++) styleChip(chips[k], k == i);
         homeScroll.setVisibility(i == 0 ? View.VISIBLE : View.GONE);
         musicList.setVisibility(i == 1 ? View.VISIBLE : View.GONE);
         albumGrid.setVisibility(i == 2 ? View.VISIBLE : View.GONE);
         artistGrid.setVisibility(i == 3 ? View.VISIBLE : View.GONE);
-        if (i == 0) rebuildHome();
+        if (i != old && i != 0) fadeIn(i == 1 ? musicList : (i == 2 ? albumGrid : artistGrid), 0);
+        if (i == 0) rebuildHome(i != old);
     }
 
     boolean playerOpen() {
@@ -1030,14 +1063,17 @@ public class MainActivity extends Activity implements ServiceConnection {
 
     void openPlayer() {
         if (svc == null || svc.current() == null) return;
+        player.animate().cancel();
         player.setVisibility(View.VISIBLE);
         player.setTranslationY(root.getHeight());
-        player.animate().translationY(0).setDuration(220).start();
+        player.animate().translationY(0).setStartDelay(0).setDuration(320)
+                .setInterpolator(new DecelerateInterpolator(1.6f)).start();
         refresh();
     }
 
     void closePlayer() {
-        player.animate().translationY(root.getHeight()).setDuration(200)
+        player.animate().translationY(root.getHeight()).setStartDelay(0).setDuration(240)
+                .setInterpolator(new AccelerateInterpolator(1.2f))
                 .withEndAction(() -> player.setVisibility(View.GONE)).start();
     }
 
@@ -1135,6 +1171,10 @@ public class MainActivity extends Activity implements ServiceConnection {
     }
 
     void rebuildHome() {
+        rebuildHome(false);
+    }
+
+    void rebuildHome(boolean anim) {
         if (homeBox == null) return;
         greetTv.setText(greeting());
         homeBox.removeAllViews();
@@ -1184,6 +1224,9 @@ public class MainActivity extends Activity implements ServiceConnection {
                 addItem(hs3, card(g.tracks.get(0), g.name, g.sub, v -> playGroup(g)), dp(110));
             }
             homeBox.addView(hs3);
+        }
+        if (anim) {
+            for (int k = 0; k < homeBox.getChildCount(); k++) fadeIn(homeBox.getChildAt(k), 45L * k);
         }
     }
 
@@ -1378,7 +1421,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         artistAdapter.notifyDataSetChanged();
         filterSearch();
         loadFavs();
-        rebuildHome();
+        rebuildHome(true);
         refresh();
     }
 
@@ -1394,7 +1437,9 @@ public class MainActivity extends Activity implements ServiceConnection {
         if (svc == null) return;
         Track t = svc.current();
         boolean pl = svc.isPlaying();
+        boolean miniWas = mini.getVisibility() == View.VISIBLE;
         mini.setVisibility(t == null ? View.GONE : View.VISIBLE);
+        if (t != null && !miniWas) fadeIn(mini, 0);
         if (t != null) {
             miniTitle.setText(t.title);
             miniSub.setText(t.artist);
@@ -1406,6 +1451,14 @@ public class MainActivity extends Activity implements ServiceConnection {
             if (t.id != themeFor) {
                 themeFor = t.id;
                 final Track tt = t;
+                fadeIn(pTitle, 0);
+                fadeIn(pArtist, 60);
+                fadeIn(miniTitle, 0);
+                fadeIn(miniSub, 40);
+                pArt.setScaleX(0.92f);
+                pArt.setScaleY(0.92f);
+                pArt.animate().scaleX(1f).scaleY(1f).setStartDelay(0).setDuration(340)
+                        .setInterpolator(new DecelerateInterpolator()).start();
                 Art.color(this, tt, col -> {
                     if (themeFor == tt.id) applyTheme(col);
                 });
@@ -1425,6 +1478,11 @@ public class MainActivity extends Activity implements ServiceConnection {
         int icon = pl ? R.drawable.ic_pause : R.drawable.ic_play;
         miniPlay.setImageResource(icon);
         pPlay.setImageResource(icon);
+        if (pl != lastPl) {
+            lastPl = pl;
+            pop(pPlay);
+            pop(miniPlay);
+        }
         pShuf.setColorFilter(svc.shuffle ? acc : C_MUT);
         pRep.setImageResource(svc.repeat == 2 ? R.drawable.ic_repeat_one : R.drawable.ic_repeat);
         pRep.setColorFilter(svc.repeat > 0 ? acc : C_MUT);
@@ -1448,12 +1506,12 @@ public class MainActivity extends Activity implements ServiceConnection {
         int d = svc.dur(), p = svc.pos();
         if (mini.getVisibility() == View.VISIBLE) {
             float f = d > 0 ? Math.min(1f, (float) p / d) : 0f;
-            setW(miniFill, f);
-            setW(miniRest, 1f - f);
+            miniFill.animate().scaleX(f).setStartDelay(0).setDuration(300).setInterpolator(lin).start();
         }
         if (!dragging && playerOpen()) {
             pSeek.setMax(Math.max(d, 1));
-            pSeek.setProgress(p);
+            if (Build.VERSION.SDK_INT >= 24) pSeek.setProgress(p, true);
+            else pSeek.setProgress(p);
             pCur.setText(fmt(p));
             pDur.setText(fmt(d));
         }

@@ -47,6 +47,7 @@ final class Art {
     static void bind(Context ctx, final ImageView iv, final Track t, final int px) {
         final long key = keyOf(t, px);
         iv.setTag(key);
+        iv.setAlpha(1f);
         Bitmap b = CACHE.get(key);
         if (b != null) {
             show(iv, b);
@@ -65,7 +66,11 @@ final class Art {
                         if (r != null) CACHE.put(key, r);
                         else MISS.add(key);
                         Object tag = iv.getTag();
-                        if (r != null && tag instanceof Long && ((Long) tag).longValue() == key) show(iv, r);
+                        if (r != null && tag instanceof Long && ((Long) tag).longValue() == key) {
+                            show(iv, r);
+                            iv.setAlpha(0f);
+                            iv.animate().alpha(1f).setStartDelay(0).setDuration(220).start();
+                        }
                     }
                 });
             }
@@ -84,6 +89,20 @@ final class Art {
         iv.setBackground(g);
         iv.setScaleType(ImageView.ScaleType.CENTER);
         iv.setImageResource(R.drawable.ic_note_ph);
+    }
+
+    /** Para quien ya está en un hilo de fondo (por ejemplo la notificación). Siempre devuelve un bitmap normal. */
+    static Bitmap decodeSync(Context c, Track t, int px) {
+        try {
+            Bitmap b = decode(c, t, px);
+            if (b != null && Build.VERSION.SDK_INT >= 26 && b.getConfig() == Bitmap.Config.HARDWARE) {
+                Bitmap s = b.copy(Bitmap.Config.ARGB_8888, false);
+                if (s != null) b = s;
+            }
+            return b;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static int sample(int w, int h, int px) {
