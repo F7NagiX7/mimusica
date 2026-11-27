@@ -116,7 +116,16 @@ public class MainActivity extends Activity implements ServiceConnection {
     Fade winFade, playerFade, lyrFade;
     GradientDrawable playBg;
     ValueAnimator tintAnim;
-    boolean lastPl;
+    boolean lastPl, restoreTried;
+    LinearLayout artBox;
+    ListView artList;
+    TextView artName, artCount, artPlay, artShuf;
+    ImageView artPic;
+    TrackAdapter artAdapter;
+    Fade artFade;
+    final ArrayList<Track> artTracks = new ArrayList<>();
+    String artSrc = "";
+    final Random artRnd = new Random();
     final LinearInterpolator lin = new LinearInterpolator();
 
     FrameLayout root, pages, content;
@@ -445,9 +454,11 @@ public class MainActivity extends Activity implements ServiceConnection {
         buildHome();
         buildSearch();
         buildLib();
+        buildArtist();
         pages.addView(pageHome, new FrameLayout.LayoutParams(MATCH, MATCH));
         pages.addView(pageSearch, new FrameLayout.LayoutParams(MATCH, MATCH));
         pages.addView(pageLib, new FrameLayout.LayoutParams(MATCH, MATCH));
+        pages.addView(artBox, new FrameLayout.LayoutParams(MATCH, MATCH));
         main.addView(pages, new LinearLayout.LayoutParams(MATCH, 0, 1f));
         buildMini();
         main.addView(mini);
@@ -536,7 +547,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         albumGrid.setOnItemClickListener((p, v, pos, id) -> playGroup(albums.get(pos)));
         artistAdapter = new GroupAdapter(artists, true);
         artistGrid = grid(artistAdapter, 3);
-        artistGrid.setOnItemClickListener((p, v, pos, id) -> playGroup(artists.get(pos)));
+        artistGrid.setOnItemClickListener((p, v, pos, id) -> openArtist(artists.get(pos)));
 
         content.addView(homeScroll, new FrameLayout.LayoutParams(MATCH, MATCH));
         content.addView(musicList, new FrameLayout.LayoutParams(MATCH, MATCH));
@@ -1016,6 +1027,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     /* ====================== Navegación ====================== */
 
     void showPage(int p) {
+        closeArtist(false);
         int old = page;
         page = p;
         pageHome.setVisibility(p == 0 ? View.VISIBLE : View.GONE);
@@ -1046,6 +1058,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     }
 
     void showTab(int i) {
+        closeArtist(false);
         int old = tab;
         tab = i;
         for (int k = 0; k < 4; k++) styleChip(chips[k], k == i);
@@ -1081,6 +1094,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     public void onBackPressed() {
         if (lyricsOpen()) closeLyrics();
         else if (playerOpen()) closePlayer();
+        else if (artistOpen()) closeArtist(true);
         else if (page != 0) showPage(0);
         else if (tab != 0) showTab(0);
         else moveTaskToBack(true);
@@ -1147,9 +1161,130 @@ public class MainActivity extends Activity implements ServiceConnection {
         LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(MATCH, WRAP);
         ap.topMargin = dp(8);
         c.addView(a, ap);
-        c.setOnClickListener(v -> playGroup(g));
+        c.setOnClickListener(v -> openArtist(g));
         press(c);
         return c;
+    }
+
+    /* ====================== Perfil de artista ====================== */
+
+    void buildArtist() {
+        artFade = new Fade(tint, C_BG, 0.55f);
+        artBox = new LinearLayout(this);
+        artBox.setOrientation(LinearLayout.VERTICAL);
+        artBox.setBackground(artFade);
+        artBox.setClickable(true); // no deja pasar toques a la pantalla de atrás
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(8), dp(8), dp(8), 0);
+        ImageButton back = ib(R.drawable.ic_down, C_TXT);
+        back.setRotation(90f);
+        back.setOnClickListener(v -> closeArtist(true));
+        top.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        artBox.addView(top);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.VERTICAL);
+        head.setGravity(Gravity.CENTER_HORIZONTAL);
+        head.setPadding(dp(16), dp(4), dp(16), dp(12));
+        artPic = new ImageView(this);
+        makeCircle(artPic);
+        head.addView(artPic, new LinearLayout.LayoutParams(dp(150), dp(150)));
+        artName = tv("", 26, C_TXT, true);
+        artName.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(MATCH, WRAP);
+        np.topMargin = dp(14);
+        head.addView(artName, np);
+        artCount = tv("", 13, C_MUT, false);
+        artCount.setGravity(Gravity.CENTER);
+        head.addView(artCount, new LinearLayout.LayoutParams(MATCH, WRAP));
+        LinearLayout btns = new LinearLayout(this);
+        btns.setGravity(Gravity.CENTER);
+        artPlay = tv("Reproducir", 14, 0xFF000000, true);
+        artPlay.setGravity(Gravity.CENTER);
+        artPlay.setOnClickListener(v -> playArtist(false));
+        press(artPlay);
+        artShuf = tv("Aleatorio", 14, C_TXT, true);
+        artShuf.setGravity(Gravity.CENTER);
+        artShuf.setBackground(glass(dp(24)));
+        artShuf.setOnClickListener(v -> playArtist(true));
+        press(artShuf);
+        LinearLayout.LayoutParams b1 = new LinearLayout.LayoutParams(dp(140), dp(46));
+        b1.rightMargin = dp(6);
+        LinearLayout.LayoutParams b2 = new LinearLayout.LayoutParams(dp(140), dp(46));
+        b2.leftMargin = dp(6);
+        btns.addView(artPlay, b1);
+        btns.addView(artShuf, b2);
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(MATCH, WRAP);
+        bp.topMargin = dp(16);
+        head.addView(btns, bp);
+
+        artAdapter = new TrackAdapter(artTracks);
+        artList = new ListView(this);
+        artList.setDivider(null);
+        artList.setSelector(android.R.color.transparent);
+        artList.setVerticalScrollBarEnabled(false);
+        artList.addHeaderView(head, null, false);
+        artList.setAdapter(artAdapter);
+        artList.setOnItemClickListener((p, v, pos, id) -> {
+            int i = pos - artList.getHeaderViewsCount();
+            if (i >= 0 && i < artTracks.size()) playList(artTracks, i, artSrc);
+        });
+        artBox.addView(artList, new LinearLayout.LayoutParams(MATCH, 0, 1f));
+        artBox.setVisibility(View.GONE);
+    }
+
+    boolean artistOpen() {
+        return artBox != null && artBox.getVisibility() == View.VISIBLE;
+    }
+
+    void openArtist(Group g) {
+        artTracks.clear();
+        artTracks.addAll(g.tracks);
+        Collections.sort(artTracks, (x, y) -> {
+            int d = x.album.compareToIgnoreCase(y.album);
+            if (d != 0) return d;
+            if (x.trackNo != y.trackNo) return Integer.compare(x.trackNo, y.trackNo);
+            return x.title.compareToIgnoreCase(y.title);
+        });
+        artSrc = g.name;
+        artName.setText(g.name);
+        int n = artTracks.size();
+        artCount.setText(n + (n == 1 ? " canción" : " canciones"));
+        Art.bind(this, artPic, artTracks.get(0), 400);
+        artFade.setTop(tint);
+        GradientDrawable pb = new GradientDrawable();
+        pb.setColor(acc);
+        pb.setCornerRadius(dp(24));
+        artPlay.setBackground(pb);
+        artAdapter.notifyDataSetChanged();
+        artList.setSelection(0);
+        artBox.animate().cancel();
+        artBox.setVisibility(View.VISIBLE);
+        fadeIn(artBox, 0);
+    }
+
+    void closeArtist(boolean anim) {
+        if (!artistOpen()) return;
+        artBox.animate().cancel();
+        if (!anim) {
+            artBox.setVisibility(View.GONE);
+            return;
+        }
+        artBox.animate().alpha(0f).translationY(dp(16)).setStartDelay(0).setDuration(200)
+                .setInterpolator(new AccelerateInterpolator())
+                .withEndAction(() -> artBox.setVisibility(View.GONE)).start();
+    }
+
+    void playArtist(boolean shuffleIt) {
+        if (artTracks.isEmpty() || svc == null) return;
+        if (shuffleIt) {
+            svc.shuffle = true;
+            playList(artTracks, artRnd.nextInt(artTracks.size()), artSrc);
+        } else {
+            svc.shuffle = false;
+            playList(artTracks, 0, artSrc);
+        }
     }
 
     View emptyView() {
@@ -1263,7 +1398,34 @@ public class MainActivity extends Activity implements ServiceConnection {
     public void onServiceConnected(ComponentName n, IBinder b) {
         svc = ((PlayerService.LocalBinder) b).get();
         svc.onChange = this::refresh;
+        tryRestore();
         refresh();
+    }
+
+    /** Al abrir la app, deja la última canción en el minuto y segundo donde se quedó (en pausa). */
+    void tryRestore() {
+        if (restoreTried || svc == null || all.isEmpty()) return;
+        restoreTried = true;
+        if (svc.current() != null) return;
+        long last = Store.lastId(this);
+        if (last < 0) return;
+        ArrayList<Track> q = new ArrayList<>();
+        int idx = -1;
+        for (Long id : Store.queueIds(this)) {
+            Track t = byId.get(id);
+            if (t == null) continue;
+            if (t.id == last) idx = q.size();
+            q.add(t);
+        }
+        if (idx < 0) {
+            Track t = byId.get(last);
+            if (t == null) return;
+            q.clear();
+            q.add(t);
+            idx = 0;
+        }
+        svc.restore(q, idx, Store.lastPos(this), Store.lastSrc(this),
+                Store.lastShuffle(this), Store.lastRepeat(this));
     }
 
     @Override
@@ -1310,6 +1472,10 @@ public class MainActivity extends Activity implements ServiceConnection {
     void ask() {
         if (checkSelfPermission(audioPerm()) == PackageManager.PERMISSION_GRANTED) {
             load();
+            if (Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2);
+            }
             return;
         }
         if (Build.VERSION.SDK_INT >= 33) {
@@ -1322,6 +1488,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
         super.onRequestPermissionsResult(code, perms, res);
+        if (code == 2) return;
         if (checkSelfPermission(audioPerm()) == PackageManager.PERMISSION_GRANTED) {
             load();
         } else {
@@ -1422,6 +1589,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         filterSearch();
         loadFavs();
         rebuildHome(true);
+        tryRestore();
         refresh();
     }
 
@@ -1489,6 +1657,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         musicAdapter.notifyDataSetChanged();
         searchAdapter.notifyDataSetChanged();
         libAdapter.notifyDataSetChanged();
+        artAdapter.notifyDataSetChanged();
         tick();
     }
 
@@ -1527,6 +1696,7 @@ public class MainActivity extends Activity implements ServiceConnection {
 
     @Override
     protected void onPause() {
+        if (svc != null) svc.savePos();
         h.removeCallbacks(ticker);
         super.onPause();
     }

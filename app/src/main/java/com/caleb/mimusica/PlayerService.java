@@ -77,6 +77,14 @@ public class PlayerService extends Service
     private int lastVol = -1;
     private boolean pausedByVol;
     private ContentObserver volObs;
+    private boolean quiet; // restaurada al abrir: sin notificación hasta que suene
+    private final Runnable saver = new Runnable() {
+        @Override
+        public void run() {
+            savePos();
+            if (isPlaying()) h.postDelayed(this, 3000);
+        }
+    };
     private BroadcastReceiver volRx;
 
     private final BroadcastReceiver noisy = new BroadcastReceiver() {
@@ -136,11 +144,14 @@ public class PlayerService extends Service
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
+        savePos();
         if (!isPlaying()) stopAll();
     }
 
     @Override
     public void onDestroy() {
+        savePos();
+        h.removeCallbacks(saver);
         try { unregisterReceiver(noisy); } catch (Exception ignored) { }
         if (volRx != null) {
             try { unregisterReceiver(volRx); } catch (Exception ignored) { }
@@ -177,7 +188,50 @@ public class PlayerService extends Service
     void playQueue(ArrayList<Track> q, int pos, String src) {
         queue = q;
         source = src;
+        Store.saveQueue(this, q, src);
         start(pos);
+    }
+
+    /** Guarda en qué canción y en qué milisegundo va (para seguir ahí al volver a abrir la app). */
+    void savePos() {
+        Track t = current();
+        if (t == null || mp == null || !prepared) return;
+        Store.savePos(this, t.id, pos(), shuffle, repeat);
+    }
+
+    /** Deja lista la última canción en su minuto exacto, en pausa y sin notificación. */
+    void restore(ArrayList<Track> q, int i, int posMs, String src, boolean sh, int rep) {
+        if (current() != null || i < 0 || i >= q.size()) return;
+        queue = q;
+        source = src;
+        shuffle = sh;
+        repeat = rep;
+        idx = i;
+        pausedByVol = false;
+        prepared = false;
+        try {
+            mp = new MediaPlayer();
+            mp.setAudioAttributes(attrs);
+            mp.setWakeMode(this, PowerManager.PARTIAL_WAKE_LOCK);
+            mp.setOnCompletionListener(this);
+            mp.setOnErrorListener(this);
+            mp.setDataSource(this, q.get(i).uri());
+            mp.prepare();
+            prepared = true;
+            int d = mp.getDuration();
+            mp.seekTo(Math.max(0, Math.min(posMs, d - 500)));
+            quiet = true;
+        } catch (Exception e) {
+            prepared = false;
+            try { if (mp != null) mp.release(); } catch (Exception ignored) { }
+            mp = null;
+            idx = -1;
+            return;
+        }
+        sessionMeta();
+        loadArt(q.get(i));
+        sessionState();
+        if (onChange != null) onChange.run();
     }
 
     /** Canción que sigue, o null si no se puede saber (aleatorio) o es la última. */
@@ -189,11 +243,13 @@ public class PlayerService extends Service
 
     void toggleShuffle() {
         shuffle = !shuffle;
+        savePos();
         afterChange();
     }
 
     void cycleRepeat() {
         repeat = (repeat + 1) % 3;
+        savePos();
         afterChange();
     }
 
@@ -266,7 +322,7 @@ public class PlayerService extends Service
                 if (c == null || c.id != t.id) return;
                 art = b;
                 sessionMeta();
-                if (idx >= 0) nm.notify(NID, buildNotification());
+                if (idx >= 0 && !quiet) nm.notify(NID, buildNotification());
             });
         });
     }
@@ -275,6 +331,7 @@ public class PlayerService extends Service
         if (i < 0 || i >= queue.size()) return;
         idx = i;
         pausedByVol = false;
+        quiet = false;
         prepared = false;
         try {
             if (mp != null) mp.release(); // una sola canción en memoria a la vez
@@ -292,6 +349,8 @@ public class PlayerService extends Service
                 fails = 0;
                 resumeOnFocus = false;
                 if (!fg) goForeground();
+                h.removeCallbacks(saver);
+                h.postDelayed(saver, 3000);
             }
         } catch (Exception e) {
             prepared = false;
@@ -302,6 +361,7 @@ public class PlayerService extends Service
         }
         sessionMeta();
         loadArt(queue.get(i));
+        savePos();
         afterChange();
     }
 
@@ -316,8 +376,11 @@ public class PlayerService extends Service
 
     private void resume() {
         if (mp == null || !prepared || !requestFocus()) return;
+        quiet = false;
         mp.start();
         if (!fg) goForeground();
+        h.removeCallbacks(saver);
+        h.postDelayed(saver, 3000);
         afterChange();
     }
 
@@ -328,6 +391,7 @@ public class PlayerService extends Service
     private void pause(boolean keepForeground) {
         if (mp == null || !prepared) return;
         try { if (mp.isPlaying()) mp.pause(); } catch (Exception ignored) { }
+        savePos();
         if (fg && !keepForeground) {
             stopForeground(false);
             fg = false;
@@ -359,11 +423,14 @@ public class PlayerService extends Service
     void seekTo(int ms) {
         if (mp != null && prepared) {
             try { mp.seekTo(ms); } catch (Exception ignored) { }
+            savePos();
             sessionState();
         }
     }
 
     private void stopAll() {
+        savePos();
+        h.removeCallbacks(saver);
         try { if (mp != null) mp.release(); } catch (Exception ignored) { }
         mp = null;
         prepared = false;
@@ -425,7 +492,7 @@ public class PlayerService extends Service
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
                 if (isPlaying()) {
                     resumeOnFocus = true;
-                    pause();
+                    pause(true); // sigue en primer plano para poder reanudar con la pantalla apagada
                 }
                 break;
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
@@ -447,7 +514,7 @@ public class PlayerService extends Service
 
     private void afterChange() {
         sessionState();
-        if (idx >= 0) nm.notify(NID, buildNotification());
+        if (idx >= 0 && !quiet) nm.notify(NID, buildNotification());
         if (onChange != null) onChange.run();
     }
 

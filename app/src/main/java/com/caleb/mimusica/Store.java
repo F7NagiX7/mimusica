@@ -74,6 +74,40 @@ final class Store {
                 .apply();
     }
 
+    /* ---------- Última reproducción (para continuar donde se quedó) ---------- */
+
+    static void saveQueue(Context c, ArrayList<Track> q, String src) {
+        StringBuilder sb = new StringBuilder();
+        for (Track t : q) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(t.id);
+        }
+        prefs(c).edit().putString("q", sb.toString()).putString("qs", src).apply();
+    }
+
+    static void savePos(Context c, long id, int pos, boolean shuffle, int repeat) {
+        prefs(c).edit().putLong("qid", id).putInt("qp", Math.max(pos, 0))
+                .putBoolean("qsh", shuffle).putInt("qr", repeat).apply();
+    }
+
+    static ArrayList<Long> queueIds(Context c) {
+        ArrayList<Long> r = new ArrayList<>();
+        String s = prefs(c).getString("q", "");
+        if (s.isEmpty()) return r;
+        for (String p : s.split(",")) {
+            try {
+                r.add(Long.parseLong(p));
+            } catch (Exception ignored) { }
+        }
+        return r;
+    }
+
+    static long lastId(Context c) { return prefs(c).getLong("qid", -1); }
+    static int lastPos(Context c) { return prefs(c).getInt("qp", 0); }
+    static String lastSrc(Context c) { return prefs(c).getString("qs", "Mi música"); }
+    static boolean lastShuffle(Context c) { return prefs(c).getBoolean("qsh", false); }
+    static int lastRepeat(Context c) { return prefs(c).getInt("qr", 0); }
+
     static int plays(Context c, String artist) {
         return prefs(c).getInt("a:" + artist, 0);
     }
