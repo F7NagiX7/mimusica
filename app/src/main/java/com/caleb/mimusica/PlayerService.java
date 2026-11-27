@@ -192,6 +192,41 @@ public class PlayerService extends Service
         start(pos);
     }
 
+    /** Suelta el archivo un momento (para poder reescribir su etiqueta). Devuelve {posición, sonaba}. */
+    int[] detach() {
+        int p = pos();
+        boolean was = isPlaying();
+        h.removeCallbacks(saver);
+        try { if (mp != null) { if (mp.isPlaying()) mp.pause(); mp.release(); } } catch (Exception ignored) { }
+        mp = null;
+        prepared = false;
+        return new int[]{p, was ? 1 : 0};
+    }
+
+    /** Vuelve a abrir la misma canción en el mismo punto (y la sigue si sonaba). */
+    void attach(int posMs, boolean play) {
+        Track t = current();
+        if (t == null) return;
+        try {
+            mp = new MediaPlayer();
+            mp.setAudioAttributes(attrs);
+            mp.setWakeMode(this, PowerManager.PARTIAL_WAKE_LOCK);
+            mp.setOnCompletionListener(this);
+            mp.setOnErrorListener(this);
+            mp.setDataSource(this, t.uri());
+            mp.prepare();
+            prepared = true;
+            mp.seekTo(Math.max(0, Math.min(posMs, mp.getDuration() - 300)));
+        } catch (Exception e) {
+            prepared = false;
+            try { if (mp != null) mp.release(); } catch (Exception ignored) { }
+            mp = null;
+            afterChange();
+            return;
+        }
+        if (play) resume(); else afterChange();
+    }
+
     /** Guarda en qué canción y en qué milisegundo va (para seguir ahí al volver a abrir la app). */
     void savePos() {
         Track t = current();

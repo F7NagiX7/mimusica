@@ -104,6 +104,9 @@ public class MainActivity extends Activity implements ServiceConnection {
     int lyrIdx = -2, lyrCur = -1, lyrOff;
     String lyrRaw;
     boolean lyrKeep, fetching;
+    static final int REQ_WRITE = 77;
+    Track pendT;
+    String pendText;
     LinearLayout lyrSync;
     TextView lyrOffTv;
     final Handler h = new Handler(Looper.getMainLooper());
@@ -967,6 +970,8 @@ public class MainActivity extends Activity implements ServiceConnection {
                     if (t.isEmpty()) Store.clearLyr(this, id);
                     else Store.saveLyr(this, id, t);
                     reloadLyrics();
+                    Track tr = byId.get(id);
+                    if (!t.isEmpty() && tr != null) saveToFile(tr, t);
                 })
                 .setNeutralButton("Original", (d, w) -> {
                     Store.clearLyr(this, id);
@@ -1011,6 +1016,7 @@ public class MainActivity extends Activity implements ServiceConnection {
                 Store.setLyrOffset(this, t.id, 0);
                 Track c = svc == null ? null : svc.current();
                 if (c != null && c.id == t.id) reloadLyrics();
+                saveToFile(t, ft);
                 boolean sy = Lyrics.parse(ft).times != null;
                 Toast.makeText(this, sy ? "Letra corregida ✓ (con sincronización)"
                         : "Letra corregida ✓ (solo texto: no encontré una con tiempos)", Toast.LENGTH_LONG).show();
@@ -1041,6 +1047,78 @@ public class MainActivity extends Activity implements ServiceConnection {
                         startFetch(t, et.getText().toString().trim(), ea.getText().toString().trim()))
                 .setNegativeButton("Cancelar", null)
                 .show();
+    }
+
+    /** Escribe la letra dentro del archivo de música para no tener que corregirla otra vez. */
+    void saveToFile(Track t, String text) {
+        pendT = t;
+        pendText = text;
+        doWrite();
+    }
+
+    void doWrite() {
+        final Track t = pendT;
+        final String text = pendText;
+        if (t == null || text == null) return;
+        final boolean cur = svc != null && svc.current() != null && svc.current().id == t.id;
+        final int[] st = cur ? svc.detach() : null;   // se suelta el archivo mientras se reescribe
+        Toast.makeText(this, "Guardando la letra en el archivo…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            int res;
+            android.content.IntentSender consent = null;
+            try {
+                res = TagWriter.write(this, t.uri(), text, getCacheDir());
+            } catch (SecurityException e) {
+                res = TagWriter.DENIED;
+                consent = TagWriter.consent(this, t.uri(), e);
+            }
+            final int fr = res;
+            final android.content.IntentSender fc = consent;
+            h.post(() -> {
+                if (st != null && svc != null) svc.attach(st[0], st[1] == 1);
+                switch (fr) {
+                    case TagWriter.OK:
+                        pendT = null;
+                        Toast.makeText(this, "Letra guardada dentro del archivo ✓", Toast.LENGTH_LONG).show();
+                        break;
+                    case TagWriter.UNSUPPORTED:
+                        pendT = null;
+                        Toast.makeText(this, "Este formato no permite guardar la letra dentro del archivo (solo MP3 y FLAC). Quedó guardada en la app.", Toast.LENGTH_LONG).show();
+                        break;
+                    case TagWriter.DENIED:
+                        if (fc != null) {
+                            try {
+                                startIntentSenderForResult(fc, REQ_WRITE, null, 0, 0, 0);
+                                break;
+                            } catch (Exception ignored) { }
+                        }
+                        if (Build.VERSION.SDK_INT <= 28
+                                && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 3);
+                            break;
+                        }
+                        pendT = null;
+                        Toast.makeText(this, "Android no me dejó modificar el archivo. La letra quedó guardada en la app.", Toast.LENGTH_LONG).show();
+                        break;
+                    default:
+                        pendT = null;
+                        Toast.makeText(this, "No pude escribir en el archivo (el original quedó igual). La letra quedó guardada en la app.", Toast.LENGTH_LONG).show();
+                        break;
+                }
+            });
+        }).start();
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != REQ_WRITE) return;
+        if (res == RESULT_OK) {
+            doWrite();
+        } else {
+            pendT = null;
+            Toast.makeText(this, "Sin permiso no se puede cambiar el archivo. La letra quedó guardada en la app.", Toast.LENGTH_LONG).show();
+        }
     }
 
     void reloadLyrics() {
@@ -1661,6 +1739,11 @@ public class MainActivity extends Activity implements ServiceConnection {
     public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
         super.onRequestPermissionsResult(code, perms, res);
         if (code == 2) return;
+        if (code == 3) {
+            if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) doWrite();
+            else pendT = null;
+            return;
+        }
         if (checkSelfPermission(audioPerm()) == PackageManager.PERMISSION_GRANTED) {
             load();
         } else {
