@@ -979,14 +979,19 @@ public class MainActivity extends Activity implements ServiceConnection {
     /** Busca la letra correcta (con tiempos) en internet y reemplaza la del archivo. */
     void fetchOnline() {
         final Track t = svc == null ? null : svc.current();
-        if (t == null || fetching) return;
+        if (t == null) return;
+        startFetch(t, t.title, t.artist);
+    }
+
+    void startFetch(final Track t, final String title, final String artist) {
+        if (fetching) return;
         fetching = true;
         Toast.makeText(this, "Buscando letra en internet…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             String found = null;
             boolean net = true;
             try {
-                found = Online.find(t);
+                found = Online.find(title, artist, (long) t.duration);
             } catch (java.io.IOException e) {
                 net = false;
             } catch (Exception ignored) { }
@@ -995,17 +1000,47 @@ public class MainActivity extends Activity implements ServiceConnection {
             h.post(() -> {
                 fetching = false;
                 if (ft == null) {
-                    Toast.makeText(this, fnet ? "No encontré esta letra en internet"
-                            : "No hay conexión a internet", Toast.LENGTH_LONG).show();
+                    if (!fnet) {
+                        Toast.makeText(this, "No hay conexión a internet", Toast.LENGTH_LONG).show();
+                    } else {
+                        manualSearch(t, title, artist);
+                    }
                     return;
                 }
                 Store.saveLyr(this, t.id, ft);
                 Store.setLyrOffset(this, t.id, 0);
                 Track c = svc == null ? null : svc.current();
                 if (c != null && c.id == t.id) reloadLyrics();
-                Toast.makeText(this, "Letra corregida ✓", Toast.LENGTH_SHORT).show();
+                boolean sy = Lyrics.parse(ft).times != null;
+                Toast.makeText(this, sy ? "Letra corregida ✓ (con sincronización)"
+                        : "Letra corregida ✓ (solo texto: no encontré una con tiempos)", Toast.LENGTH_LONG).show();
             });
         }).start();
+    }
+
+    /** Si no la encuentra sola: dejas cambiar título y artista (a veces el archivo los trae mal) y reintenta. */
+    void manualSearch(final Track t, String title, String artist) {
+        final EditText et = new EditText(this);
+        et.setHint("Título de la canción");
+        et.setText(Online.cleanTitle(title));
+        et.setSingleLine(true);
+        final EditText ea = new EditText(this);
+        ea.setHint("Artista");
+        ea.setText(Online.cleanArtist(artist));
+        ea.setSingleLine(true);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        box.addView(et);
+        box.addView(ea);
+        new AlertDialog.Builder(this)
+                .setTitle("No la encontré")
+                .setMessage("Revisa cómo está escrito el título y el artista. Puedes cambiarlos y volver a buscar.")
+                .setView(box)
+                .setPositiveButton("Buscar", (d, w) ->
+                        startFetch(t, et.getText().toString().trim(), ea.getText().toString().trim()))
+                .setNegativeButton("Cancelar", null)
+                .show();
     }
 
     void reloadLyrics() {
