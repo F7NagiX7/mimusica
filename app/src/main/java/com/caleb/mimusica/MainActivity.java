@@ -104,6 +104,26 @@ public class MainActivity extends Activity implements ServiceConnection {
     int lyrIdx = -2, lyrCur = -1, lyrOff;
     String lyrRaw;
     boolean lyrKeep, fetching;
+    /** Línea de la letra cuyo color se puede animar sin volver a medir el texto. */
+    static final class LineSpan extends android.text.style.CharacterStyle {
+        int color;
+
+        LineSpan(int c) {
+            color = c;
+        }
+
+        @Override
+        public void updateDrawState(android.text.TextPaint tp) {
+            tp.setColor(color);
+        }
+    }
+    static final int LYR_DIM = 0x59FFFFFF, LYR_ON = 0xFFFFFFFF;
+    LineSpan[] fullSpans;
+    int[] fullStarts;
+    Lyrics.Doc fullFor;
+    boolean fullReady;
+    int fullIdx = -1, animFrom = -1, animTo = -1;
+    ValueAnimator lyrAnim, scrollAnim;
     static final int REQ_WRITE = 77;
     Track pendT;
     String pendText;
@@ -1138,6 +1158,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         Track t = svc == null ? null : svc.current();
         lyrTitle.setText(t == null ? "Letra" : t.title + " — " + t.artist);
         lyrSync.setVisibility(lyr.times == null ? View.GONE : View.VISIBLE);
+        fullReady = false;
         lyrBox.setVisibility(View.VISIBLE);
         lyrBox.setTranslationY(root.getHeight());
         lyrBox.animate().cancel();
@@ -1181,20 +1202,87 @@ public class MainActivity extends Activity implements ServiceConnection {
         if (!force && idx == lyrIdx) return;
         lyrIdx = idx;
         int base = lyr.times == null ? 0xF2FFFFFF : 0x66FFFFFF;
+        boolean soft = !force && lyr.times != null && lyrBody.getText().length() > 0;
         lyrBody.setTextColor(base);
         lyrBody.setText(lyrText(idx, false));
-        if (lyricsOpen()) {
-            lyrFullTv.setTextColor(lyr.times == null ? 0xFFFFFFFF : 0x59FFFFFF);
-            lyrFullTv.setText(lyrText(idx, true));
-            final int off = lyrCur;
-            if (off >= 0) {
-                lyrFullTv.post(() -> {
-                    Layout lay = lyrFullTv.getLayout();
-                    if (lay == null) return;
-                    int y = lay.getLineTop(lay.getLineForOffset(off));
-                    lyrScroll.smoothScrollTo(0, Math.max(0, y - lyrScroll.getHeight() / 3));
-                });
+        if (soft) {   // la tarjeta del reproductor: la letra sube suavecito al cambiar de línea
+            lyrBody.animate().cancel();
+            lyrBody.setAlpha(0.35f);
+            lyrBody.setTranslationY(dp(8));
+            lyrBody.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(320)
+                    .setInterpolator(new DecelerateInterpolator()).start();
+        }
+        if (lyricsOpen()) renderFull(idx);
+    }
+
+    void buildFull() {
+        SpannableStringBuilder sb = new SpannableStringBuilder();
+        int n = lyr.lines.length;
+        boolean sync = lyr.times != null;
+        fullSpans = new LineSpan[n];
+        fullStarts = new int[n];
+        for (int i = 0; i < n; i++) {
+            int st = sb.length();
+            sb.append(lyr.lines[i]);
+            fullStarts[i] = st;
+            fullSpans[i] = new LineSpan(sync ? LYR_DIM : LYR_ON);
+            if (sb.length() > st) sb.setSpan(fullSpans[i], st, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            if (i < n - 1) sb.append('\n');
+        }
+        lyrFullTv.setText(sb);
+        fullFor = lyr;
+    }
+
+    int scrollTarget(int idx) {
+        Layout lay = lyrFullTv.getLayout();
+        if (lay == null || fullStarts == null || idx < 0 || idx >= fullStarts.length) return 0;
+        int y = lay.getLineTop(lay.getLineForOffset(fullStarts[idx]));
+        return Math.max(0, y - lyrScroll.getHeight() / 3);
+    }
+
+    /** Letra grande: la línea nueva se enciende y la anterior se apaga con un fundido, y el texto se desliza. */
+    void renderFull(final int idx) {
+        boolean sync = lyr.times != null;
+        if (!fullReady || fullFor != lyr) {          // primera vez: se dibuja ya en su sitio
+            if (lyrAnim != null) lyrAnim.cancel();
+            if (scrollAnim != null) scrollAnim.cancel();
+            buildFull();
+            fullIdx = idx;
+            fullReady = true;
+            if (sync && idx >= 0 && idx < fullSpans.length) {
+                fullSpans[idx].color = LYR_ON;
+                lyrFullTv.post(() -> lyrScroll.scrollTo(0, scrollTarget(idx)));
             }
+            return;
+        }
+        if (!sync || idx == fullIdx) return;
+        final int from = fullIdx, to = idx;
+        fullIdx = idx;
+        if (lyrAnim != null && lyrAnim.isRunning()) {   // si venía otro cambio a medias, se termina de golpe
+            lyrAnim.cancel();
+            if (animTo >= 0 && animTo < fullSpans.length) fullSpans[animTo].color = LYR_ON;
+            if (animFrom >= 0 && animFrom < fullSpans.length) fullSpans[animFrom].color = LYR_DIM;
+        }
+        if (scrollAnim != null) scrollAnim.cancel();
+        animFrom = from;
+        animTo = to;
+        final ArgbEvaluator ev = new ArgbEvaluator();
+        lyrAnim = ValueAnimator.ofFloat(0f, 1f);
+        lyrAnim.setDuration(380);
+        lyrAnim.setInterpolator(new DecelerateInterpolator());
+        lyrAnim.addUpdateListener(a -> {
+            float f = (float) a.getAnimatedValue();
+            if (to >= 0 && to < fullSpans.length) fullSpans[to].color = (int) ev.evaluate(f, LYR_DIM, LYR_ON);
+            if (from >= 0 && from < fullSpans.length) fullSpans[from].color = (int) ev.evaluate(f, LYR_ON, LYR_DIM);
+            lyrFullTv.invalidate();
+        });
+        lyrAnim.start();
+        if (to >= 0) {
+            scrollAnim = ValueAnimator.ofInt(lyrScroll.getScrollY(), scrollTarget(to));
+            scrollAnim.setDuration(520);
+            scrollAnim.setInterpolator(new DecelerateInterpolator(1.5f));
+            scrollAnim.addUpdateListener(a -> lyrScroll.scrollTo(0, (int) a.getAnimatedValue()));
+            scrollAnim.start();
         }
     }
 
