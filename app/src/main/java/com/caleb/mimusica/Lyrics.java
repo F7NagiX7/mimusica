@@ -73,7 +73,18 @@ final class Lyrics {
     private static String clean(String s) {
         if (s == null) return null;
         s = s.replace("\r\n", "\n").replace('\r', '\n').replace("\u0000", "").trim();
+        s = repair(s);
         return s.isEmpty() ? null : s;
+    }
+
+    /** Arregla letras con acentos rotos ("canciÃ³n" → "canción"): UTF-8 que se leyó como Latin-1. */
+    static String repair(String s) {
+        if (s.indexOf('Ã') < 0 && s.indexOf('Â') < 0 && s.indexOf('â') < 0) return s;
+        try {
+            String r = new String(s.getBytes(Charset.forName("windows-1252")), StandardCharsets.UTF_8);
+            if (r.indexOf('\uFFFD') < 0 && r.length() < s.length()) return r;
+        } catch (Exception ignored) { }
+        return s;
     }
 
     private static void skip(DataInputStream in, long n) throws IOException {
@@ -166,7 +177,17 @@ final class Lyrics {
             case 1: cs = Charset.forName("UTF-16"); break;
             case 2: cs = Charset.forName("UTF-16BE"); break;
             case 3: cs = StandardCharsets.UTF_8; break;
-            default: cs = StandardCharsets.ISO_8859_1; break;
+            default:
+                // Dice "Latin-1" pero muchas veces es UTF-8: si cuadra como UTF-8, se usa así.
+                try {
+                    return StandardCharsets.UTF_8.newDecoder()
+                            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                            .decode(java.nio.ByteBuffer.wrap(d, off, len)).toString();
+                } catch (Exception e) {
+                    cs = Charset.forName("windows-1252");
+                }
+                break;
         }
         return new String(d, off, len, cs);
     }

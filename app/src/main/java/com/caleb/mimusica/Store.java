@@ -74,6 +74,20 @@ final class Store {
                 .apply();
     }
 
+    /* ---------- Letras corregidas por el usuario ---------- */
+
+    static String lyrText(Context c, long id) { return prefs(c).getString("ly:" + id, null); }
+    static void saveLyr(Context c, long id, String t) { prefs(c).edit().putString("ly:" + id, t).apply(); }
+    static void clearLyr(Context c, long id) { prefs(c).edit().remove("ly:" + id).apply(); }
+    static int lyrOffset(Context c, long id) { return prefs(c).getInt("lo:" + id, 0); }
+
+    static void setLyrOffset(Context c, long id, int ms) {
+        SharedPreferences.Editor e = prefs(c).edit();
+        if (ms == 0) e.remove("lo:" + id);
+        else e.putInt("lo:" + id, ms);
+        e.apply();
+    }
+
     /* ---------- Última reproducción (para continuar donde se quedó) ---------- */
 
     static void saveQueue(Context c, ArrayList<Track> q, String src) {

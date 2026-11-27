@@ -100,7 +100,11 @@ public class MainActivity extends Activity implements ServiceConnection {
     final ExecutorService lyrEx = Executors.newSingleThreadExecutor();
     Lyrics.Doc lyr;
     long lyrFor = -1;
-    int lyrIdx = -2, lyrCur = -1;
+    int lyrIdx = -2, lyrCur = -1, lyrOff;
+    String lyrRaw;
+    boolean lyrKeep;
+    LinearLayout lyrSync;
+    TextView lyrOffTv;
     final Handler h = new Handler(Looper.getMainLooper());
     final TextView[] chips = new TextView[4];
     final ImageView[] navIcon = new ImageView[3];
@@ -883,7 +887,22 @@ public class MainActivity extends Activity implements ServiceConnection {
         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, WRAP, 1f);
         tp.leftMargin = dp(8);
         top.addView(lyrTitle, tp);
+        LinearLayout.LayoutParams ep = new LinearLayout.LayoutParams(WRAP, dp(36));
+        ep.leftMargin = dp(8);
+        top.addView(pill("Editar", v -> editLyrics()), ep);
         lyrBox.addView(top);
+        lyrSync = new LinearLayout(this);
+        lyrSync.setGravity(Gravity.CENTER_VERTICAL);
+        lyrSync.setPadding(dp(16), dp(2), dp(16), dp(6));
+        lyrSync.addView(pill("−0,5 s", v -> nudgeLyrics(-500)), new LinearLayout.LayoutParams(WRAP, dp(36)));
+        lyrOffTv = tv("Sincro 0 s", 12, C_MUT, false);
+        lyrOffTv.setGravity(Gravity.CENTER);
+        lyrOffTv.setOnClickListener(v -> nudgeLyrics(Integer.MIN_VALUE));
+        lyrSync.addView(lyrOffTv, new LinearLayout.LayoutParams(dp(92), WRAP));
+        lyrSync.addView(pill("+0,5 s", v -> nudgeLyrics(500)), new LinearLayout.LayoutParams(WRAP, dp(36)));
+        View sp = new View(this);
+        lyrSync.addView(sp, new LinearLayout.LayoutParams(0, 1, 1f));
+        lyrBox.addView(lyrSync);
         lyrScroll = new ScrollView(this);
         lyrScroll.setVerticalScrollBarEnabled(false);
         lyrFullTv = tv("", 28, 0x59FFFFFF, true);
@@ -894,6 +913,73 @@ public class MainActivity extends Activity implements ServiceConnection {
         lyrBox.setVisibility(View.GONE);
     }
 
+    /** Botón pequeño de vidrio. */
+    TextView pill(String s, View.OnClickListener ck) {
+        TextView p = tv(s, 13, C_TXT, true);
+        p.setGravity(Gravity.CENTER);
+        p.setPadding(dp(14), 0, dp(14), 0);
+        p.setBackground(glass(dp(18)));
+        p.setOnClickListener(ck);
+        press(p);
+        return p;
+    }
+
+    /** Adelanta o atrasa la letra de esta canción (se recuerda). MIN_VALUE = volver a 0. */
+    void nudgeLyrics(int delta) {
+        if (lyr == null || lyrFor < 0) return;
+        lyrOff = delta == Integer.MIN_VALUE ? 0 : Math.max(-30000, Math.min(30000, lyrOff + delta));
+        Store.setLyrOffset(this, lyrFor, lyrOff);
+        showOffset();
+        renderLyrics(true);
+    }
+
+    void showOffset() {
+        if (lyrOffTv == null) return;
+        lyrOffTv.setText(lyrOff == 0 ? "Sincro 0 s"
+                : String.format(Locale.US, "Sincro %+.1f s", lyrOff / 1000.0).replace('.', ','));
+    }
+
+    /** Editar el texto (corregir ortografía). Se guarda en la app, no toca el archivo de música. */
+    void editLyrics() {
+        if (lyrRaw == null || lyrFor < 0) return;
+        final long id = lyrFor;
+        final EditText e = new EditText(this);
+        e.setText(lyrRaw);
+        e.setTextSize(14);
+        e.setGravity(Gravity.TOP | Gravity.START);
+        e.setMinLines(8);
+        e.setMaxLines(14);
+        e.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        FrameLayout box = new FrameLayout(this);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        box.addView(e, new FrameLayout.LayoutParams(MATCH, WRAP));
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Editar letra")
+                .setView(box)
+                .setPositiveButton("Guardar", (d, w) -> {
+                    String t = e.getText().toString().trim();
+                    if (t.isEmpty()) Store.clearLyr(this, id);
+                    else Store.saveLyr(this, id, t);
+                    reloadLyrics();
+                })
+                .setNeutralButton("Original", (d, w) -> {
+                    Store.clearLyr(this, id);
+                    reloadLyrics();
+                })
+                .setNegativeButton("Cancelar", null)
+                .show();
+    }
+
+    void reloadLyrics() {
+        Track c = svc == null ? null : svc.current();
+        if (c == null) return;
+        lyrFor = -1;
+        lyrKeep = true;
+        loadLyrics(c);
+    }
+
     boolean lyricsOpen() {
         return lyrBox.getVisibility() == View.VISIBLE;
     }
@@ -902,6 +988,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         if (lyr == null) return;
         Track t = svc == null ? null : svc.current();
         lyrTitle.setText(t == null ? "Letra" : t.title + " — " + t.artist);
+        lyrSync.setVisibility(lyr.times == null ? View.GONE : View.VISIBLE);
         lyrBox.setVisibility(View.VISIBLE);
         lyrBox.setTranslationY(root.getHeight());
         lyrBox.animate().cancel();
@@ -941,7 +1028,7 @@ public class MainActivity extends Activity implements ServiceConnection {
 
     void renderLyrics(boolean force) {
         if (lyr == null || svc == null) return;
-        int idx = lyr.times == null ? -1 : lyr.indexAt(svc.pos());
+        int idx = lyr.times == null ? -1 : lyr.indexAt(svc.pos() + lyrOff);
         if (!force && idx == lyrIdx) return;
         lyrIdx = idx;
         int base = lyr.times == null ? 0xF2FFFFFF : 0x66FFFFFF;
@@ -968,21 +1055,32 @@ public class MainActivity extends Activity implements ServiceConnection {
         lyrFor = t.id;
         lyr = null;
         lyrIdx = -2;
+        lyrRaw = null;
+        lyrOff = Store.lyrOffset(this, t.id);
+        showOffset();
         lyricsCard.setVisibility(View.GONE);
-        if (lyricsOpen()) closeLyrics();
+        if (lyricsOpen() && !lyrKeep) closeLyrics();
+        lyrKeep = false;
         lyrEx.execute(() -> {
             Lyrics.Doc d = null;
-            try (java.io.InputStream in = getContentResolver().openInputStream(t.uri())) {
-                if (in != null) {
-                    String txt = Lyrics.read(in);
-                    if (txt != null) d = Lyrics.parse(txt);
-                }
-            } catch (Exception ignored) { }
+            String txt = Store.lyrText(this, t.id); // si la corregiste tú, manda la tuya
+            if (txt == null) {
+                try (java.io.InputStream in = getContentResolver().openInputStream(t.uri())) {
+                    if (in != null) txt = Lyrics.read(in);
+                } catch (Exception ignored) { }
+            }
+            if (txt != null) d = Lyrics.parse(txt);
             final Lyrics.Doc fd = d;
+            final String ft = txt;
             h.post(() -> {
                 if (lyrFor != t.id) return;
                 lyr = fd;
-                if (fd == null) return;
+                lyrRaw = ft;
+                if (fd == null) {
+                    if (lyricsOpen()) closeLyrics();
+                    return;
+                }
+                lyrSync.setVisibility(fd.times == null ? View.GONE : View.VISIBLE);
                 lyricsCard.setVisibility(View.VISIBLE);
                 renderLyrics(true);
             });
