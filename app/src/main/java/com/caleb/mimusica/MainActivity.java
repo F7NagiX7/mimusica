@@ -52,6 +52,7 @@ import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -102,7 +103,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     long lyrFor = -1;
     int lyrIdx = -2, lyrCur = -1, lyrOff;
     String lyrRaw;
-    boolean lyrKeep;
+    boolean lyrKeep, fetching;
     LinearLayout lyrSync;
     TextView lyrOffTv;
     final Handler h = new Handler(Looper.getMainLooper());
@@ -804,8 +805,8 @@ public class MainActivity extends Activity implements ServiceConnection {
         lyrBody.setPadding(0, 0, dp(8), 0);
         lyricsCard.addView(lyrBody);
         lyricsCard.setVisibility(View.GONE);
-        lyricsCard.setOnClickListener(v -> openLyrics());
-        lx.setOnClickListener(v -> openLyrics());
+        lyricsCard.setOnClickListener(v -> { if (lyr == null) fetchOnline(); else openLyrics(); });
+        lx.setOnClickListener(v -> { if (lyr == null) fetchOnline(); else openLyrics(); });
         LinearLayout.LayoutParams lcp = new LinearLayout.LayoutParams(MATCH, WRAP);
         lcp.topMargin = dp(18);
         col.addView(lyricsCard, lcp);
@@ -889,7 +890,10 @@ public class MainActivity extends Activity implements ServiceConnection {
         top.addView(lyrTitle, tp);
         LinearLayout.LayoutParams ep = new LinearLayout.LayoutParams(WRAP, dp(36));
         ep.leftMargin = dp(8);
-        top.addView(pill("Editar", v -> editLyrics()), ep);
+        top.addView(pill("Corregir", v -> fetchOnline()), ep);
+        LinearLayout.LayoutParams ep2 = new LinearLayout.LayoutParams(WRAP, dp(36));
+        ep2.leftMargin = dp(6);
+        top.addView(pill("Editar", v -> editLyrics()), ep2);
         lyrBox.addView(top);
         lyrSync = new LinearLayout(this);
         lyrSync.setGravity(Gravity.CENTER_VERTICAL);
@@ -970,6 +974,38 @@ public class MainActivity extends Activity implements ServiceConnection {
                 })
                 .setNegativeButton("Cancelar", null)
                 .show();
+    }
+
+    /** Busca la letra correcta (con tiempos) en internet y reemplaza la del archivo. */
+    void fetchOnline() {
+        final Track t = svc == null ? null : svc.current();
+        if (t == null || fetching) return;
+        fetching = true;
+        Toast.makeText(this, "Buscando letra en internet…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            String found = null;
+            boolean net = true;
+            try {
+                found = Online.find(t);
+            } catch (java.io.IOException e) {
+                net = false;
+            } catch (Exception ignored) { }
+            final String ft = found;
+            final boolean fnet = net;
+            h.post(() -> {
+                fetching = false;
+                if (ft == null) {
+                    Toast.makeText(this, fnet ? "No encontré esta letra en internet"
+                            : "No hay conexión a internet", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                Store.saveLyr(this, t.id, ft);
+                Store.setLyrOffset(this, t.id, 0);
+                Track c = svc == null ? null : svc.current();
+                if (c != null && c.id == t.id) reloadLyrics();
+                Toast.makeText(this, "Letra corregida ✓", Toast.LENGTH_SHORT).show();
+            });
+        }).start();
     }
 
     void reloadLyrics() {
@@ -1078,6 +1114,9 @@ public class MainActivity extends Activity implements ServiceConnection {
                 lyrRaw = ft;
                 if (fd == null) {
                     if (lyricsOpen()) closeLyrics();
+                    lyrBody.setTextColor(0x99FFFFFF);
+                    lyrBody.setText("No hay letra en el archivo.\nToca aquí para buscarla en internet.");
+                    lyricsCard.setVisibility(View.VISIBLE);
                     return;
                 }
                 lyrSync.setVisibility(fd.times == null ? View.GONE : View.VISIBLE);
