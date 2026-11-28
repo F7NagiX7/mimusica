@@ -25,9 +25,6 @@ final class Lyrics {
     static final class Doc {
         final String[] lines;
         final long[] times;
-        /** Tiempos por palabra (null si la letra no los trae). Por línea: texto, inicio y fin en ms. */
-        String[][] unitText;
-        long[][] unitStart, unitEnd;
 
         Doc(String[] lines, long[] times) {
             this.lines = lines;
@@ -302,76 +299,16 @@ final class Lyrics {
     private static final Pattern LINE =
             Pattern.compile("^\\s*((?:\\[\\d{1,3}:\\d{2}(?:[.:]\\d{1,3})?\\])+)(.*)$");
     private static final Pattern STAMP = Pattern.compile("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?\\]");
-    private static final Pattern WTAG = Pattern.compile("<(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?>");
     private static final Pattern META = Pattern.compile("^\\s*\\[[a-zA-Z]+:.*\\]\\s*$");
-
-    /** Quita las marcas &lt;mm:ss.xx&gt; de palabra (para guardar una letra normal dentro del archivo). */
-    static String stripWordTags(String text) {
-        return text == null ? null : WTAG.matcher(text).replaceAll("");
-    }
-
-    private static long stampMs(String mm, String ss, String f) {
-        long ms = Long.parseLong(mm) * 60000L + Long.parseLong(ss) * 1000L;
-        if (f != null) {
-            long v = Long.parseLong(f);
-            ms += f.length() == 1 ? v * 100 : f.length() == 2 ? v * 10 : v;
-        }
-        return ms;
-    }
-
-    /** Parte "<t>palabra <t>otra <t>" en unidades con inicio y fin; null si no hay marcas. */
-    private static Object[] units(String body) {
-        Matcher w = WTAG.matcher(body);
-        ArrayList<Long> st = new ArrayList<>();
-        ArrayList<Integer> ps = new ArrayList<>(), pe = new ArrayList<>();
-        while (w.find()) {
-            st.add(stampMs(w.group(1), w.group(2), w.group(3)));
-            ps.add(w.start());
-            pe.add(w.end());
-        }
-        if (st.isEmpty()) return null;
-        ArrayList<String> tx = new ArrayList<>();
-        ArrayList<Long> a = new ArrayList<>(), b = new ArrayList<>();
-        for (int k = 0; k < st.size(); k++) {
-            int from = pe.get(k);
-            int to = k + 1 < st.size() ? ps.get(k + 1) : body.length();
-            String t = body.substring(from, to);
-            if (t.isEmpty() && k + 1 >= st.size()) continue;   // marca final sin texto: solo cierra
-            long end = k + 1 < st.size() ? st.get(k + 1) : st.get(k) + 700;
-            tx.add(t);
-            a.add(st.get(k));
-            b.add(Math.max(end, st.get(k) + 60));
-        }
-        if (tx.isEmpty()) return null;
-        // la primera unidad sin espacios al inicio y la última sin espacios al final: el texto coincide con la línea mostrada
-        tx.set(0, tx.get(0).replaceAll("^\\s+", ""));
-        int z = tx.size() - 1;
-        tx.set(z, tx.get(z).replaceAll("\\s+$", ""));
-        String[] ta = tx.toArray(new String[0]);
-        long[] sa = new long[ta.length], sb = new long[ta.length];
-        for (int k = 0; k < ta.length; k++) {
-            sa[k] = a.get(k);
-            sb[k] = b.get(k);
-        }
-        return new Object[]{ta, sa, sb};
-    }
 
     static Doc parse(String text) {
         String[] raw = text.split("\n", -1);
         ArrayList<Long> ts = new ArrayList<>();
         ArrayList<String> tx = new ArrayList<>();
-        ArrayList<Object[]> un = new ArrayList<>();
         for (String line : raw) {
             Matcher m = LINE.matcher(line);
             if (!m.matches()) continue;
             String body = m.group(2).trim();
-            Object[] u = units(body);
-            if (u != null) {
-                StringBuilder sbd = new StringBuilder();
-                for (String x : (String[]) u[0]) sbd.append(x);
-                body = sbd.toString().trim();
-                if (body.isEmpty()) u = null;
-            }
             Matcher s = STAMP.matcher(m.group(1));
             while (s.find()) {
                 long ms = Long.parseLong(s.group(1)) * 60000L + Long.parseLong(s.group(2)) * 1000L;
@@ -382,7 +319,6 @@ final class Lyrics {
                 }
                 ts.add(ms);
                 tx.add(body.isEmpty() ? "♪" : body);
-                un.add(u);
             }
         }
         if (ts.size() >= 2) {
@@ -396,22 +332,7 @@ final class Lyrics {
                 lines[i] = tx.get(order[i]);
                 times[i] = ts.get(order[i]);
             }
-            Doc d = new Doc(lines, times);
-            int with = 0;
-            for (Object[] u : un) if (u != null) with++;
-            if (with >= 3) {
-                d.unitText = new String[lines.length][];
-                d.unitStart = new long[lines.length][];
-                d.unitEnd = new long[lines.length][];
-                for (int i = 0; i < order.length; i++) {
-                    Object[] u = un.get(order[i]);
-                    if (u == null) continue;
-                    d.unitText[i] = (String[]) u[0];
-                    d.unitStart[i] = (long[]) u[1];
-                    d.unitEnd[i] = (long[]) u[2];
-                }
-            }
-            return d;
+            return new Doc(lines, times);
         }
         ArrayList<String> plain = new ArrayList<>();
         for (String line : raw) {
