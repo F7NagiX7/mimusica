@@ -12,6 +12,8 @@ import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
 import android.database.ContentObserver;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.drawable.Drawable;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioDeviceCallback;
@@ -362,8 +364,8 @@ public class PlayerService extends Service
             idx = -1;
             return;
         }
-        sessionMeta();
         loadArt(q.get(i));
+        sessionMeta();
         sessionState();
         if (onChange != null) onChange.run();
     }
@@ -444,17 +446,37 @@ public class PlayerService extends Service
 
     /* ---------- Portada para la notificación y la pantalla de bloqueo ---------- */
 
+    private Bitmap ph;
+
+    /** Portada de relleno (nota musical): así nunca se queda la portada de la canción anterior. */
+    private Bitmap placeholder() {
+        if (ph == null) {
+            ph = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888);
+            Canvas cv = new Canvas(ph);
+            cv.drawColor(0xFF2B3A55);
+            Drawable d = getDrawable(R.drawable.ic_note_ph);
+            if (d != null) {
+                d.setBounds(156, 156, 356, 356);
+                d.draw(cv);
+            }
+        }
+        return ph;
+    }
+
     private void loadArt(final Track t) {
         if (t.id == artFor) return;
         artFor = t.id;
-        art = null;
+        Bitmap quick = Art.peek(t);          // si ya estaba en la caché, sale al instante
+        art = quick != null ? quick : placeholder();
         final Context app = getApplicationContext();
         artEx.execute(() -> {
+            Track c0 = current();
+            if (c0 == null || c0.id != t.id) return;   // ya pasó a otra canción: no se gasta en decodificar
             final Bitmap b = Art.decodeSync(app, t, 512);
             h.post(() -> {
                 Track c = current();
                 if (c == null || c.id != t.id) return;
-                art = b;
+                if (b != null) art = b;
                 sessionMeta();
                 if (idx >= 0 && !quiet) nm.notify(NID, buildNotification());
             });
@@ -493,8 +515,8 @@ public class PlayerService extends Service
                 return;
             }
         }
-        sessionMeta();
         loadArt(queue.get(i));
+        sessionMeta();
         savePos();
         afterChange();
     }

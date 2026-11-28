@@ -91,6 +91,24 @@ final class Art {
         iv.setImageResource(R.drawable.ic_note_ph);
     }
 
+    /** Portada ya guardada en la caché (de cualquier tamaño), lista para usar; null si aún no está. */
+    static Bitmap peek(Track t) {
+        int[] sizes = {512, 320, 128};
+        for (int px : sizes) {
+            Bitmap b = CACHE.get(keyOf(t, px));
+            if (b == null) continue;
+            if (Build.VERSION.SDK_INT >= 26 && b.getConfig() == Bitmap.Config.HARDWARE) {
+                try {
+                    Bitmap s = b.copy(Bitmap.Config.ARGB_8888, false);
+                    if (s != null) return s;
+                } catch (Exception ignored) { }
+                continue;
+            }
+            return b;
+        }
+        return null;
+    }
+
     /** Para quien ya está en un hilo de fondo (por ejemplo la notificación). Siempre devuelve un bitmap normal. */
     static Bitmap decodeSync(Context c, Track t, int px) {
         try {
