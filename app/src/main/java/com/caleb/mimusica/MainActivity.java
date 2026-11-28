@@ -1614,7 +1614,7 @@ public class MainActivity extends Activity implements ServiceConnection {
             int d = idx < 0 ? i + 1 : Math.abs(i - idx);
             al[i] = d == 1 ? 0.42f : (d == 2 ? 0.34f : 0.26f);
             sc[i] = 0.94f;
-            bl[i] = !blurOk || d > 8 ? 0f : (d == 1 ? dp(2.5f) : (d == 2 ? dp(4f) : dp(5.5f)));
+            bl[i] = !blurOk ? 0f : (d == 1 ? dp(2.5f) : (d == 2 ? dp(4f) : dp(5.5f)));
         }
     }
 
