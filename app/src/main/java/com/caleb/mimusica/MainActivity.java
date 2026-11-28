@@ -117,20 +117,19 @@ public class MainActivity extends Activity implements ServiceConnection {
             tp.setColor(color);
         }
     }
-    static final int LYR_DIM = 0x59FFFFFF, LYR_ON = 0xFFFFFFFF;
-    LineSpan[] fullSpans;
-    int[] fullStarts;
+    static final int LYR_DIM = 0x66FFFFFF, LYR_ON = 0xFFFFFFFF;
     Lyrics.Doc fullFor;
     boolean fullReady;
-    int fullIdx = -1, animFrom = -1, animTo = -1;
-    ValueAnimator lyrAnim, scrollAnim;
+    int fullIdx = -1;
     static final int REQ_WRITE = 77;
     Track pendT;
     TagWriter.Edits pendEd;
     static final int REQ_DELETE = 78;
     Track delT;
-    LinearLayout lyrSync;
-    TextView lyrOffTv;
+    LinearLayout lyrLines;
+    TextView lyrSub;
+    ImageView lyrCover;
+    ImageButton lyrHeart;
     final Handler h = new Handler(Looper.getMainLooper());
     final TextView[] chips = new TextView[4];
     final ImageView[] navIcon = new ImageView[3];
@@ -174,7 +173,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     View miniFill, miniRest;
     LinearLayout nextCard, lyricsCard, lyrBox;
     ScrollView lyrScroll;
-    TextView lyrBody, lyrFullTv, lyrTitle;
+    TextView lyrBody, lyrTitle;
     SeekBar pSeek;
 
     final Runnable ticker = new Runnable() {
@@ -186,6 +185,10 @@ public class MainActivity extends Activity implements ServiceConnection {
     };
 
     /* ====================== Utilidades de interfaz ====================== */
+
+    float dp(float v) {
+        return v * getResources().getDisplayMetrics().density;
+    }
 
     int dp(int v) {
         return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
@@ -915,41 +918,68 @@ public class MainActivity extends Activity implements ServiceConnection {
         lyrBox = new LinearLayout(this);
         lyrBox.setOrientation(LinearLayout.VERTICAL);
         lyrBox.setBackground(lyrFade);
+        // barrita de arriba: tocarla cierra la letra (como la hoja de Apple Music)
+        View grab = new View(this);
+        GradientDrawable gb = new GradientDrawable();
+        gb.setColor(0x66FFFFFF);
+        gb.setCornerRadius(dp(3));
+        grab.setBackground(gb);
+        FrameLayout gh = new FrameLayout(this);
+        gh.setOnClickListener(v -> closeLyrics());
+        FrameLayout.LayoutParams gp2 = new FrameLayout.LayoutParams(dp(40), dp(5));
+        gp2.gravity = Gravity.CENTER;
+        gh.addView(grab, gp2);
+        lyrBox.addView(gh, new LinearLayout.LayoutParams(MATCH, dp(26)));
+
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        top.setPadding(dp(8), dp(8), dp(8), dp(4));
-        ImageButton close = ib(R.drawable.ic_down, C_TXT);
-        close.setOnClickListener(v -> closeLyrics());
-        top.addView(close, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        top.setPadding(dp(18), dp(4), dp(14), dp(10));
+        lyrCover = new ImageView(this);
+        lyrCover.setOutlineProvider(new ViewOutlineProvider() {
+            @Override
+            public void getOutline(View v, Outline o) {
+                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), dp(8));
+            }
+        });
+        lyrCover.setClipToOutline(true);
+        top.addView(lyrCover, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        LinearLayout names = new LinearLayout(this);
+        names.setOrientation(LinearLayout.VERTICAL);
         lyrTitle = one(tv("Letra", 15, C_TXT, true));
-        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, WRAP, 1f);
-        tp.leftMargin = dp(8);
-        top.addView(lyrTitle, tp);
-        LinearLayout.LayoutParams ep = new LinearLayout.LayoutParams(WRAP, dp(36));
-        ep.leftMargin = dp(8);
-        top.addView(pill("Corregir", v -> fetchOnline()), ep);
-        LinearLayout.LayoutParams ep2 = new LinearLayout.LayoutParams(WRAP, dp(36));
-        ep2.leftMargin = dp(6);
-        top.addView(pill("Editar", v -> editLyrics()), ep2);
+        lyrSub = one(tv("", 13, C_MUT, false));
+        names.addView(lyrTitle);
+        names.addView(lyrSub);
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(0, WRAP, 1f);
+        np.leftMargin = dp(12);
+        top.addView(names, np);
+        lyrHeart = ib(R.drawable.ic_heart_o, C_TXT);
+        lyrHeart.setBackground(glass(dp(20)));
+        lyrHeart.setPadding(dp(9), dp(9), dp(9), dp(9));
+        lyrHeart.setOnClickListener(v -> {
+            Track c = svc == null ? null : svc.current();
+            if (c == null) return;
+            Store.toggleFav(this, c.id);
+            pop(lyrHeart);
+            loadFavs();
+            refresh();
+            svc.syncSession();
+            refreshLyrHeart();
+        });
+        top.addView(lyrHeart, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        ImageButton more = ib(R.drawable.ic_more, C_TXT);
+        more.setBackground(glass(dp(20)));
+        more.setPadding(dp(9), dp(9), dp(9), dp(9));
+        more.setOnClickListener(v -> showLyricsMenu());
+        LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(dp(40), dp(40));
+        mp.leftMargin = dp(10);
+        top.addView(more, mp);
         lyrBox.addView(top);
-        lyrSync = new LinearLayout(this);
-        lyrSync.setGravity(Gravity.CENTER_VERTICAL);
-        lyrSync.setPadding(dp(16), dp(2), dp(16), dp(6));
-        lyrSync.addView(pill("−0,5 s", v -> nudgeLyrics(-500)), new LinearLayout.LayoutParams(WRAP, dp(36)));
-        lyrOffTv = tv("Sincro 0 s", 12, C_MUT, false);
-        lyrOffTv.setGravity(Gravity.CENTER);
-        lyrOffTv.setOnClickListener(v -> nudgeLyrics(Integer.MIN_VALUE));
-        lyrSync.addView(lyrOffTv, new LinearLayout.LayoutParams(dp(92), WRAP));
-        lyrSync.addView(pill("+0,5 s", v -> nudgeLyrics(500)), new LinearLayout.LayoutParams(WRAP, dp(36)));
-        View sp = new View(this);
-        lyrSync.addView(sp, new LinearLayout.LayoutParams(0, 1, 1f));
-        lyrBox.addView(lyrSync);
+
         lyrScroll = new ScrollView(this);
         lyrScroll.setVerticalScrollBarEnabled(false);
-        lyrFullTv = tv("", 28, 0x59FFFFFF, true);
-        lyrFullTv.setLineSpacing(dp(10), 1f);
-        lyrFullTv.setPadding(dp(24), dp(16), dp(24), dp(120));
-        lyrScroll.addView(lyrFullTv);
+        lyrLines = new LinearLayout(this);
+        lyrLines.setOrientation(LinearLayout.VERTICAL);
+        lyrScroll.addView(lyrLines, new FrameLayout.LayoutParams(MATCH, WRAP));
         lyrBox.addView(lyrScroll, new LinearLayout.LayoutParams(MATCH, 0, 1f));
         lyrBox.setVisibility(View.GONE);
     }
@@ -970,14 +1000,11 @@ public class MainActivity extends Activity implements ServiceConnection {
         if (lyr == null || lyrFor < 0) return;
         lyrOff = delta == Integer.MIN_VALUE ? 0 : Math.max(-30000, Math.min(30000, lyrOff + delta));
         Store.setLyrOffset(this, lyrFor, lyrOff);
-        showOffset();
-        renderLyrics(true);
     }
 
-    void showOffset() {
-        if (lyrOffTv == null) return;
-        lyrOffTv.setText(lyrOff == 0 ? "Sincro 0 s"
-                : String.format(Locale.US, "Sincro %+.1f s", lyrOff / 1000.0).replace('.', ','));
+    String offsetText() {
+        return lyrOff == 0 ? "Sincro 0 s"
+                : String.format(Locale.US, "Sincro %+.1f s", lyrOff / 1000.0).replace('.', ',');
     }
 
     /** Editar el texto (corregir ortografía). Se guarda en la app, no toca el archivo de música. */
@@ -1466,16 +1493,14 @@ public class MainActivity extends Activity implements ServiceConnection {
 
     void openLyrics() {
         if (lyr == null) return;
-        Track t = svc == null ? null : svc.current();
-        lyrTitle.setText(t == null ? "Letra" : t.title + " — " + t.artist);
-        lyrSync.setVisibility(lyr.times == null ? View.GONE : View.VISIBLE);
         fullReady = false;
         lyrBox.setVisibility(View.VISIBLE);
         lyrBox.setTranslationY(root.getHeight());
         lyrBox.animate().cancel();
-        lyrBox.animate().translationY(0).setStartDelay(0).setDuration(300)
+        lyrBox.animate().translationY(0).setStartDelay(0).setDuration(320)
                 .setInterpolator(new DecelerateInterpolator(1.6f)).start();
         renderLyrics(true);
+        startLyrFrames();
     }
 
     void closeLyrics() {
@@ -1526,75 +1551,263 @@ public class MainActivity extends Activity implements ServiceConnection {
         if (lyricsOpen()) renderFull(idx);
     }
 
-    void buildFull() {
-        SpannableStringBuilder sb = new SpannableStringBuilder();
-        int n = lyr.lines.length;
-        boolean sync = lyr.times != null;
-        fullSpans = new LineSpan[n];
-        fullStarts = new int[n];
-        for (int i = 0; i < n; i++) {
-            int st = sb.length();
-            sb.append(lyr.lines[i]);
-            fullStarts[i] = st;
-            fullSpans[i] = new LineSpan(sync ? LYR_DIM : LYR_ON);
-            if (sb.length() > st) sb.setSpan(fullSpans[i], st, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            if (i < n - 1) sb.append('\n');
+    /* ---------- Letra grande estilo Apple Music ---------- */
+
+    /** Una línea de la letra: sus palabras se encienden de una en una (relleno tipo karaoke). */
+    static final class LyrLine extends TextView {
+        LineSpan[] sp = new LineSpan[0];
+        float[] a = new float[0], b = new float[0];   // en qué parte de la línea empieza y termina cada palabra
+        float blur = 0f;
+
+        LyrLine(Context c) {
+            super(c);
         }
-        lyrFullTv.setText(sb);
+    }
+
+    LyrLine[] lines = new LyrLine[0];
+    float[] fromA, fromS, fromB, toA, toS, toB;
+    ValueAnimator lyrTrans;
+
+    final Runnable lyrFrame = new Runnable() {
+        @Override
+        public void run() {
+            if (!lyricsOpen() || lyr == null || svc == null) return;
+            int idx = lyr.times == null ? -1 : lyr.indexAt(svc.pos() + lyrOff);
+            renderFull(idx);
+            if (lyr.times != null) karaoke();
+            if (svc.isPlaying()) lyrBox.postOnAnimation(this);
+            else lyrBox.postDelayed(this, 120);
+        }
+    };
+
+    void startLyrFrames() {
+        lyrBox.removeCallbacks(lyrFrame);
+        lyrBox.postOnAnimation(lyrFrame);
+    }
+
+    void refreshLyrHeart() {
+        Track c = svc == null ? null : svc.current();
+        boolean f = c != null && Store.isFav(this, c.id);
+        lyrHeart.setImageResource(f ? R.drawable.ic_heart : R.drawable.ic_heart_o);
+        lyrHeart.setColorFilter(f ? acc : C_TXT);
+    }
+
+    void fillHeader() {
+        Track t = svc == null ? null : svc.current();
+        lyrTitle.setText(t == null ? "Letra" : t.title);
+        lyrSub.setText(t == null ? "" : t.artist);
+        if (t != null) Art.bind(this, lyrCover, t, 160);
+        refreshLyrHeart();
+    }
+
+    /** Estado de cada línea según su distancia a la que suena: brillo, tamaño y desenfoque. */
+    void lineTargets(int idx, float[] al, float[] sc, float[] bl) {
+        boolean sync = lyr.times != null;
+        boolean blurOk = Build.VERSION.SDK_INT >= 31;
+        for (int i = 0; i < lines.length; i++) {
+            if (!sync || i == idx) {
+                al[i] = 1f;
+                sc[i] = 1f;
+                bl[i] = 0f;
+                continue;
+            }
+            int d = idx < 0 ? i + 1 : Math.abs(i - idx);
+            al[i] = d == 1 ? 0.42f : (d == 2 ? 0.34f : 0.26f);
+            sc[i] = 0.94f;
+            bl[i] = !blurOk || d > 8 ? 0f : (d == 1 ? dp(2.5f) : (d == 2 ? dp(4f) : dp(5.5f)));
+        }
+    }
+
+    void applyLine(int i, float al, float sc, float bl) {
+        LyrLine v = lines[i];
+        v.setAlpha(al);
+        v.setScaleX(sc);
+        v.setScaleY(sc);
+        if (Build.VERSION.SDK_INT >= 31 && Math.abs(bl - v.blur) > 0.35f) {
+            v.blur = bl;
+            v.setRenderEffect(bl < 0.5f ? null
+                    : android.graphics.RenderEffect.createBlurEffect(bl, bl, android.graphics.Shader.TileMode.DECAL));
+        }
+    }
+
+    void buildLines() {
+        lyrLines.removeAllViews();
+        int n = lyr.lines.length;
+        lines = new LyrLine[n];
+        int H = getResources().getDisplayMetrics().heightPixels;
+        View top = new View(this);
+        lyrLines.addView(top, new LinearLayout.LayoutParams(MATCH, (int) (H * 0.16f)));
+        boolean sync = lyr.times != null;
+        java.util.regex.Pattern word = java.util.regex.Pattern.compile("\\S+");
+        for (int i = 0; i < n; i++) {
+            LyrLine v = new LyrLine(this);
+            v.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 28);
+            v.setTypeface(Typeface.DEFAULT_BOLD);
+            v.setTextColor(C_TXT);
+            v.setLineSpacing(dp(1), 1f);
+            v.setPadding(dp(24), dp(11), dp(24), dp(11));
+            v.addOnLayoutChangeListener((vw, l, t, r, b, ol, ot, orr, ob) -> {
+                vw.setPivotX(dp(24));
+                vw.setPivotY((b - t) / 2f);
+            });
+            String text = lyr.lines[i];
+            SpannableStringBuilder sb = new SpannableStringBuilder(text);
+            java.util.ArrayList<int[]> rg = new java.util.ArrayList<>();
+            java.util.regex.Matcher m = word.matcher(text);
+            float total = 0;
+            while (m.find()) {
+                rg.add(new int[]{m.start(), m.end()});
+                total += m.end() - m.start();
+            }
+            LineSpan[] sp = new LineSpan[rg.size()];
+            float[] fa = new float[rg.size()], fb = new float[rg.size()];
+            float cum = 0;
+            for (int k = 0; k < sp.length; k++) {
+                sp[k] = new LineSpan(LYR_ON);
+                sb.setSpan(sp[k], rg.get(k)[0], rg.get(k)[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                fa[k] = cum / total;
+                cum += rg.get(k)[1] - rg.get(k)[0];
+                fb[k] = cum / total;
+            }
+            v.sp = sp;
+            v.a = fa;
+            v.b = fb;
+            v.setText(sb);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(MATCH, WRAP);
+            if (text.trim().isEmpty()) lp.height = dp(sync ? 30 : 16);
+            lyrLines.addView(v, lp);
+            lines[i] = v;
+        }
+        View bottom = new View(this);
+        lyrLines.addView(bottom, new LinearLayout.LayoutParams(MATCH, (int) (H * 0.7f)));
         fullFor = lyr;
     }
 
-    int scrollTarget(int idx) {
-        Layout lay = lyrFullTv.getLayout();
-        if (lay == null || fullStarts == null || idx < 0 || idx >= fullStarts.length) return 0;
-        int y = lay.getLineTop(lay.getLineForOffset(fullStarts[idx]));
-        return Math.max(0, y - lyrScroll.getHeight() / 3);
+    int scrollFor(int idx) {
+        if (idx < 0 || idx >= lines.length) return 0;
+        return Math.max(0, lines[idx].getTop() - (int) (lyrScroll.getHeight() * 0.1f));
     }
 
-    /** Letra grande: la línea nueva se enciende y la anterior se apaga con un fundido, y el texto se desliza. */
+    /** Cambio de línea: todo se mueve junto y suave (brillo, tamaño, desenfoque y desplazamiento). */
     void renderFull(final int idx) {
         boolean sync = lyr.times != null;
-        if (!fullReady || fullFor != lyr) {          // primera vez: se dibuja ya en su sitio
-            if (lyrAnim != null) lyrAnim.cancel();
-            if (scrollAnim != null) scrollAnim.cancel();
-            buildFull();
+        if (!fullReady || fullFor != lyr) {                // primera vez: se dibuja ya en su sitio
+            if (lyrTrans != null) lyrTrans.cancel();
+            buildLines();
+            fillHeader();
             fullIdx = idx;
             fullReady = true;
-            if (sync && idx >= 0 && idx < fullSpans.length) {
-                fullSpans[idx].color = LYR_ON;
-                lyrFullTv.post(() -> lyrScroll.scrollTo(0, scrollTarget(idx)));
+            int n = lines.length;
+            float[] al = new float[n], sc = new float[n], bl = new float[n];
+            lineTargets(idx, al, sc, bl);
+            for (int i = 0; i < n; i++) applyLine(i, al[i], sc[i], bl[i]);
+            if (sync && idx >= 0 && idx < n) {
+                for (LineSpan s : lines[idx].sp) s.color = LYR_DIM;
+                lyrLines.post(() -> lyrScroll.scrollTo(0, scrollFor(idx)));
+            } else {
+                lyrScroll.scrollTo(0, 0);
             }
             return;
         }
         if (!sync || idx == fullIdx) return;
-        final int from = fullIdx, to = idx;
+        final int n = lines.length, old = fullIdx;
         fullIdx = idx;
-        if (lyrAnim != null && lyrAnim.isRunning()) {   // si venía otro cambio a medias, se termina de golpe
-            lyrAnim.cancel();
-            if (animTo >= 0 && animTo < fullSpans.length) fullSpans[animTo].color = LYR_ON;
-            if (animFrom >= 0 && animFrom < fullSpans.length) fullSpans[animFrom].color = LYR_DIM;
+        if (lyrTrans != null) lyrTrans.cancel();
+        if (old >= 0 && old < n) for (LineSpan s : lines[old].sp) s.color = LYR_ON;   // la que acaba queda completa
+        if (idx >= 0 && idx < n) for (LineSpan s : lines[idx].sp) s.color = LYR_DIM;  // la nueva empieza apagada
+        fromA = new float[n]; fromS = new float[n]; fromB = new float[n];
+        toA = new float[n]; toS = new float[n]; toB = new float[n];
+        for (int i = 0; i < n; i++) {
+            fromA[i] = lines[i].getAlpha();
+            fromS[i] = lines[i].getScaleX();
+            fromB[i] = lines[i].blur;
         }
-        if (scrollAnim != null) scrollAnim.cancel();
-        animFrom = from;
-        animTo = to;
-        final ArgbEvaluator ev = new ArgbEvaluator();
-        lyrAnim = ValueAnimator.ofFloat(0f, 1f);
-        lyrAnim.setDuration(380);
-        lyrAnim.setInterpolator(new DecelerateInterpolator());
-        lyrAnim.addUpdateListener(a -> {
+        lineTargets(idx, toA, toS, toB);
+        final int s0 = lyrScroll.getScrollY(), s1 = scrollFor(idx);
+        lyrTrans = ValueAnimator.ofFloat(0f, 1f);
+        lyrTrans.setDuration(560);
+        lyrTrans.setInterpolator(new DecelerateInterpolator(1.4f));
+        lyrTrans.addUpdateListener(a -> {
             float f = (float) a.getAnimatedValue();
-            if (to >= 0 && to < fullSpans.length) fullSpans[to].color = (int) ev.evaluate(f, LYR_DIM, LYR_ON);
-            if (from >= 0 && from < fullSpans.length) fullSpans[from].color = (int) ev.evaluate(f, LYR_ON, LYR_DIM);
-            lyrFullTv.invalidate();
+            for (int i = 0; i < n; i++) {
+                if (fromA[i] == toA[i] && fromS[i] == toS[i] && fromB[i] == toB[i]) continue;
+                applyLine(i, fromA[i] + (toA[i] - fromA[i]) * f, fromS[i] + (toS[i] - fromS[i]) * f,
+                        fromB[i] + (toB[i] - fromB[i]) * f);
+            }
+            lyrScroll.scrollTo(0, (int) (s0 + (s1 - s0) * f));
         });
-        lyrAnim.start();
-        if (to >= 0) {
-            scrollAnim = ValueAnimator.ofInt(lyrScroll.getScrollY(), scrollTarget(to));
-            scrollAnim.setDuration(520);
-            scrollAnim.setInterpolator(new DecelerateInterpolator(1.5f));
-            scrollAnim.addUpdateListener(a -> lyrScroll.scrollTo(0, (int) a.getAnimatedValue()));
-            scrollAnim.start();
+        lyrTrans.start();
+    }
+
+    /** Enciende las palabras de la línea actual poco a poco, según el tiempo que le toca. */
+    void karaoke() {
+        if (lyr == null || lyr.times == null || svc == null) return;
+        int i = fullIdx;
+        if (i < 0 || i >= lines.length) return;
+        long t0 = lyr.times[i];
+        long span = i + 1 < lyr.times.length ? lyr.times[i + 1] - t0 : 4000;
+        float dur = Math.max(600f, Math.min(span * 0.85f, 7000f));
+        float p = (svc.pos() + lyrOff - t0) / dur;
+        LyrLine v = lines[i];
+        ArgbEvaluator ev = new ArgbEvaluator();
+        for (int k = 0; k < v.sp.length; k++) {
+            float f = (p - v.a[k]) / Math.max(0.0001f, v.b[k] - v.a[k]);
+            f = Math.max(0f, Math.min(1f, f));
+            f = f * f * (3f - 2f * f);
+            v.sp[k].color = (int) ev.evaluate(f, LYR_DIM, LYR_ON);
         }
+        v.invalidate();
+    }
+
+    /** Menú de la letra: corregir, editar y ajustar la sincronía. */
+    void showLyricsMenu() {
+        final android.app.Dialog d = new android.app.Dialog(this);
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF202124);
+        bg.setCornerRadius(dp(20));
+        bg.setStroke(dp(1), 0x22FFFFFF);
+        panel.setBackground(bg);
+        panel.setPadding(0, dp(10), 0, dp(10));
+        panel.addView(menuItem(R.drawable.ic_refresh, "Corregir letra (internet)", d, this::fetchOnline));
+        panel.addView(menuItem(R.drawable.ic_edit, "Editar letra", d, this::editLyrics));
+        if (lyr != null && lyr.times != null) {
+            panel.addView(menuDivider());
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(20), dp(6), dp(20), dp(6));
+            final TextView lab = tv(offsetText(), 13, C_MUT, false);
+            lab.setGravity(Gravity.CENTER);
+            row.addView(pill("−0,5 s", v -> {
+                nudgeLyrics(-500);
+                lab.setText(offsetText());
+            }), new LinearLayout.LayoutParams(WRAP, dp(38)));
+            lab.setOnClickListener(v -> {
+                nudgeLyrics(Integer.MIN_VALUE);
+                lab.setText(offsetText());
+            });
+            row.addView(lab, new LinearLayout.LayoutParams(0, WRAP, 1f));
+            row.addView(pill("+0,5 s", v -> {
+                nudgeLyrics(500);
+                lab.setText(offsetText());
+            }), new LinearLayout.LayoutParams(WRAP, dp(38)));
+            panel.addView(row);
+        }
+        d.setContentView(panel);
+        android.view.Window w = d.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0));
+            w.setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.86f), WRAP);
+            w.setDimAmount(0.6f);
+        }
+        d.show();
+        panel.setAlpha(0f);
+        panel.setScaleX(0.94f);
+        panel.setScaleY(0.94f);
+        panel.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(0).setDuration(200)
+                .setInterpolator(new DecelerateInterpolator()).start();
     }
 
     /** Busca la letra dentro del archivo de la canción (en segundo plano). */
@@ -1605,7 +1818,6 @@ public class MainActivity extends Activity implements ServiceConnection {
         lyrIdx = -2;
         lyrRaw = null;
         lyrOff = Store.lyrOffset(this, t.id);
-        showOffset();
         lyricsCard.setVisibility(View.GONE);
         if (lyricsOpen() && !lyrKeep) closeLyrics();
         lyrKeep = false;
@@ -1631,7 +1843,6 @@ public class MainActivity extends Activity implements ServiceConnection {
                     lyricsCard.setVisibility(View.VISIBLE);
                     return;
                 }
-                lyrSync.setVisibility(fd.times == null ? View.GONE : View.VISIBLE);
                 lyricsCard.setVisibility(View.VISIBLE);
                 renderLyrics(true);
             });
