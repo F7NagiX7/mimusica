@@ -1629,7 +1629,26 @@ public class MainActivity extends Activity implements ServiceConnection {
         return r;
     }
     float[] fromA, fromS, fromB, toA, toS, toB;
-    ValueAnimator lyrTrans;
+    boolean trOn;               // transición de línea en curso (la mueve lyrFrame, no el animador del sistema)
+    long trStart;
+    int trS0, trS1;
+    static final long TR_MS = 560;
+
+    /** Avanza la transición según el reloj: funciona aunque el teléfono tenga las animaciones apagadas. */
+    void stepTrans() {
+        if (!trOn) return;
+        float t = Math.min(1f, (android.os.SystemClock.uptimeMillis() - trStart) / (float) TR_MS);
+        float f = 1f - (float) Math.pow(1f - t, 2.4);   // desaceleración suave
+        int n = lines.length;
+        if (fromA == null || fromA.length != n) { trOn = false; return; }
+        for (int i = 0; i < n; i++) {
+            if (fromA[i] == toA[i] && fromS[i] == toS[i] && fromB[i] == toB[i]) continue;
+            applyLine(i, fromA[i] + (toA[i] - fromA[i]) * f, fromS[i] + (toS[i] - fromS[i]) * f,
+                    fromB[i] + (toB[i] - fromB[i]) * f);
+        }
+        lyrScroll.scrollTo(0, (int) (trS0 + (trS1 - trS0) * f));
+        if (t >= 1f) trOn = false;
+    }
 
     final Runnable lyrFrame = new Runnable() {
         @Override
@@ -1637,8 +1656,9 @@ public class MainActivity extends Activity implements ServiceConnection {
             if (!lyricsOpen() || lyr == null || svc == null) return;
             int idx = lyr.times == null ? -1 : lyr.indexAt(lyrPos());
             renderFull(idx);
+            stepTrans();
             if (lyr.times != null) karaoke();
-            if (svc.isPlaying()) lyrBox.postOnAnimation(this);
+            if (svc.isPlaying() || trOn) lyrBox.postOnAnimation(this);
             else lyrBox.postDelayed(this, 120);
         }
     };
@@ -1791,7 +1811,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     void renderFull(final int idx) {
         boolean sync = lyr.times != null;
         if (!fullReady || fullFor != lyr) {                // primera vez: se dibuja ya en su sitio
-            if (lyrTrans != null) lyrTrans.cancel();
+            trOn = false;
             buildLines();
             fillHeader();
             fullIdx = idx;
@@ -1811,7 +1831,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         if (!sync || idx == fullIdx) return;
         final int n = lines.length, old = fullIdx;
         fullIdx = idx;
-        if (lyrTrans != null) lyrTrans.cancel();
+        trOn = false;
         if (old >= 0 && old < n) for (LineSpan s : lines[old].sp) s.color = LYR_ON;   // la que acaba queda completa
         if (idx >= 0 && idx < n) for (LineSpan s : lines[idx].sp) s.color = LYR_DIM;  // la nueva empieza apagada
         fromA = new float[n]; fromS = new float[n]; fromB = new float[n];
@@ -1822,20 +1842,10 @@ public class MainActivity extends Activity implements ServiceConnection {
             fromB[i] = lines[i].blur;
         }
         lineTargets(idx, toA, toS, toB);
-        final int s0 = lyrScroll.getScrollY(), s1 = scrollFor(idx);
-        lyrTrans = ValueAnimator.ofFloat(0f, 1f);
-        lyrTrans.setDuration(560);
-        lyrTrans.setInterpolator(new DecelerateInterpolator(1.4f));
-        lyrTrans.addUpdateListener(a -> {
-            float f = (float) a.getAnimatedValue();
-            for (int i = 0; i < n; i++) {
-                if (fromA[i] == toA[i] && fromS[i] == toS[i] && fromB[i] == toB[i]) continue;
-                applyLine(i, fromA[i] + (toA[i] - fromA[i]) * f, fromS[i] + (toS[i] - fromS[i]) * f,
-                        fromB[i] + (toB[i] - fromB[i]) * f);
-            }
-            lyrScroll.scrollTo(0, (int) (s0 + (s1 - s0) * f));
-        });
-        lyrTrans.start();
+        trS0 = lyrScroll.getScrollY();
+        trS1 = scrollFor(idx);
+        trStart = android.os.SystemClock.uptimeMillis();
+        trOn = true;
     }
 
     /** Enciende las palabras de la línea actual poco a poco, según el tiempo que le toca. */
