@@ -1557,7 +1557,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     static final class LyrLine extends TextView {
         LineSpan[] sp = new LineSpan[0];
         float[] a = new float[0], b = new float[0];   // en qué parte de la línea empieza y termina cada palabra
-        int lvl = 0;
+        float blur = 0f;
 
         LyrLine(Context c) {
             super(c);
@@ -1565,8 +1565,8 @@ public class MainActivity extends Activity implements ServiceConnection {
     }
 
     LyrLine[] lines = new LyrLine[0];
-    final Object[] blurFx = new Object[4];
-    final ArgbEvaluator argb = new ArgbEvaluator();
+    float[] fromA, fromS, fromB, toA, toS, toB;
+    ValueAnimator lyrTrans;
 
     final Runnable lyrFrame = new Runnable() {
         @Override
@@ -1600,47 +1600,34 @@ public class MainActivity extends Activity implements ServiceConnection {
         refreshLyrHeart();
     }
 
-    /** Estado de cada línea según su distancia a la que suena: brillo, tamaño y nivel de desenfoque (0 a 3). */
-    void lineTargets(int idx, float[] al, float[] sc, int[] lv) {
+    /** Estado de cada línea según su distancia a la que suena: brillo, tamaño y desenfoque. */
+    void lineTargets(int idx, float[] al, float[] sc, float[] bl) {
         boolean sync = lyr.times != null;
         boolean blurOk = Build.VERSION.SDK_INT >= 31;
         for (int i = 0; i < lines.length; i++) {
             if (!sync || i == idx) {
                 al[i] = 1f;
                 sc[i] = 1f;
-                lv[i] = 0;
+                bl[i] = 0f;
                 continue;
             }
             int d = idx < 0 ? i + 1 : Math.abs(i - idx);
             al[i] = d == 1 ? 0.42f : (d == 2 ? 0.34f : 0.26f);
             sc[i] = 0.94f;
-            lv[i] = !blurOk ? 0 : (d == 1 ? 1 : (d == 2 ? 2 : 3));
+            bl[i] = !blurOk ? 0f : (d == 1 ? dp(2.5f) : (d == 2 ? dp(4f) : dp(5.5f)));
         }
     }
 
-    /** El desenfoque se hace en la tarjeta gráfica y se reutiliza el mismo efecto: casi no cuesta. */
-    void setBlurLevel(LyrLine v, int lvl) {
-        if (Build.VERSION.SDK_INT < 31 || v.lvl == lvl) return;
-        v.lvl = lvl;
-        if (lvl == 0) {
-            v.setRenderEffect(null);
-            return;
-        }
-        if (blurFx[lvl] == null) {
-            float r = lvl == 1 ? dp(2.5f) : (lvl == 2 ? dp(4f) : dp(5.5f));
-            blurFx[lvl] = android.graphics.RenderEffect.createBlurEffect(r, r, android.graphics.Shader.TileMode.DECAL);
-        }
-        v.setRenderEffect((android.graphics.RenderEffect) blurFx[lvl]);
-    }
-
-    void applyLine(int i, float al, float sc, int lv) {
+    void applyLine(int i, float al, float sc, float bl) {
         LyrLine v = lines[i];
-        v.animate().cancel();
-        v.setTranslationY(0f);
         v.setAlpha(al);
         v.setScaleX(sc);
         v.setScaleY(sc);
-        setBlurLevel(v, lv);
+        if (Build.VERSION.SDK_INT >= 31 && Math.abs(bl - v.blur) > 0.35f) {
+            v.blur = bl;
+            v.setRenderEffect(bl < 0.5f ? null
+                    : android.graphics.RenderEffect.createBlurEffect(bl, bl, android.graphics.Shader.TileMode.DECAL));
+        }
     }
 
     void buildLines() {
@@ -1701,23 +1688,19 @@ public class MainActivity extends Activity implements ServiceConnection {
         return Math.max(0, lines[idx].getTop() - (int) (lyrScroll.getHeight() * 0.1f));
     }
 
-    /**
-     * Cambio de línea al estilo Apple Music: el texto salta a su nuevo sitio y cada línea "se acomoda"
-     * con un pequeño retraso que crece con su distancia (la que suena sale primero). Todo con animaciones
-     * de la tarjeta gráfica, sin recalcular texto.
-     */
+    /** Cambio de línea: todo se mueve junto y suave (brillo, tamaño, desenfoque y desplazamiento). */
     void renderFull(final int idx) {
         boolean sync = lyr.times != null;
         if (!fullReady || fullFor != lyr) {                // primera vez: se dibuja ya en su sitio
+            if (lyrTrans != null) lyrTrans.cancel();
             buildLines();
             fillHeader();
             fullIdx = idx;
             fullReady = true;
             int n = lines.length;
-            float[] al = new float[n], sc = new float[n];
-            int[] lv = new int[n];
-            lineTargets(idx, al, sc, lv);
-            for (int i = 0; i < n; i++) applyLine(i, al[i], sc[i], lv[i]);
+            float[] al = new float[n], sc = new float[n], bl = new float[n];
+            lineTargets(idx, al, sc, bl);
+            for (int i = 0; i < n; i++) applyLine(i, al[i], sc[i], bl[i]);
             if (sync && idx >= 0 && idx < n) {
                 for (LineSpan s : lines[idx].sp) s.color = LYR_DIM;
                 lyrLines.post(() -> lyrScroll.scrollTo(0, scrollFor(idx)));
@@ -1729,53 +1712,49 @@ public class MainActivity extends Activity implements ServiceConnection {
         if (!sync || idx == fullIdx) return;
         final int n = lines.length, old = fullIdx;
         fullIdx = idx;
+        if (lyrTrans != null) lyrTrans.cancel();
         if (old >= 0 && old < n) for (LineSpan s : lines[old].sp) s.color = LYR_ON;   // la que acaba queda completa
         if (idx >= 0 && idx < n) for (LineSpan s : lines[idx].sp) s.color = LYR_DIM;  // la nueva empieza apagada
-        float[] al = new float[n], sc = new float[n];
-        int[] lv = new int[n];
-        lineTargets(idx, al, sc, lv);
-        int s0 = lyrScroll.getScrollY(), s1 = scrollFor(idx);
-        int dy = s1 - s0;
-        boolean glide = Math.abs(dy) < lyrScroll.getHeight() * 1.5f;
-        lyrScroll.scrollTo(0, s1);                          // el scroll salta y cada línea se desliza desde donde estaba
-        android.view.animation.Interpolator ease = new android.view.animation.PathInterpolator(0.22f, 1f, 0.36f, 1f);
+        fromA = new float[n]; fromS = new float[n]; fromB = new float[n];
+        toA = new float[n]; toS = new float[n]; toB = new float[n];
         for (int i = 0; i < n; i++) {
-            final LyrLine v = lines[i];
-            int d = idx < 0 ? i + 1 : Math.abs(i - idx);
-            boolean near = d <= 16 || (old >= 0 && Math.abs(i - old) <= 16);
-            if (!near) {
-                applyLine(i, al[i], sc[i], lv[i]);
-                continue;
-            }
-            v.animate().cancel();
-            v.setTranslationY(glide ? v.getTranslationY() + dy : 0f);
-            final int fl = lv[i];
-            v.animate().translationY(0f).alpha(al[i]).scaleX(sc[i]).scaleY(sc[i])
-                    .setStartDelay(Math.min(d * 36L, 280L))
-                    .setDuration(i == idx ? 340 : 420)
-                    .setInterpolator(ease)
-                    .withStartAction(() -> setBlurLevel(v, fl))
-                    .start();
+            fromA[i] = lines[i].getAlpha();
+            fromS[i] = lines[i].getScaleX();
+            fromB[i] = lines[i].blur;
         }
+        lineTargets(idx, toA, toS, toB);
+        final int s0 = lyrScroll.getScrollY(), s1 = scrollFor(idx);
+        lyrTrans = ValueAnimator.ofFloat(0f, 1f);
+        lyrTrans.setDuration(560);
+        lyrTrans.setInterpolator(new DecelerateInterpolator(1.4f));
+        lyrTrans.addUpdateListener(a -> {
+            float f = (float) a.getAnimatedValue();
+            for (int i = 0; i < n; i++) {
+                if (fromA[i] == toA[i] && fromS[i] == toS[i] && fromB[i] == toB[i]) continue;
+                applyLine(i, fromA[i] + (toA[i] - fromA[i]) * f, fromS[i] + (toS[i] - fromS[i]) * f,
+                        fromB[i] + (toB[i] - fromB[i]) * f);
+            }
+            lyrScroll.scrollTo(0, (int) (s0 + (s1 - s0) * f));
+        });
+        lyrTrans.start();
     }
 
-    /** Enciende las palabras de la línea actual con una ola suave de izquierda a derecha. */
+    /** Enciende las palabras de la línea actual poco a poco, según el tiempo que le toca. */
     void karaoke() {
         if (lyr == null || lyr.times == null || svc == null) return;
         int i = fullIdx;
         if (i < 0 || i >= lines.length) return;
         long t0 = lyr.times[i];
         long span = i + 1 < lyr.times.length ? lyr.times[i + 1] - t0 : 4000;
-        float dur = Math.max(500f, Math.min(span * 0.8f, 6500f));
-        float p = Math.max(0f, (svc.pos() + lyrOff - t0) / dur);
-        final float w = 0.4f;                    // ancho de la ola: varias palabras se van encendiendo a la vez
-        float front = p * (1f + w);
+        float dur = Math.max(600f, Math.min(span * 0.85f, 7000f));
+        float p = (svc.pos() + lyrOff - t0) / dur;
         LyrLine v = lines[i];
+        ArgbEvaluator ev = new ArgbEvaluator();
         for (int k = 0; k < v.sp.length; k++) {
-            float f = (front - v.a[k]) / w;
+            float f = (p - v.a[k]) / Math.max(0.0001f, v.b[k] - v.a[k]);
             f = Math.max(0f, Math.min(1f, f));
             f = f * f * (3f - 2f * f);
-            v.sp[k].color = (int) argb.evaluate(f, LYR_DIM, LYR_ON);
+            v.sp[k].color = (int) ev.evaluate(f, LYR_DIM, LYR_ON);
         }
         v.invalidate();
     }
