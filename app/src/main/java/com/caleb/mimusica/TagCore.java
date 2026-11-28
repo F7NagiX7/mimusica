@@ -20,19 +20,24 @@ final class TagCore {
     static final int UNSUPPORTED = 0, MP3 = 1, FLAC = 2;
 
     static int rewrite(File src, File dst, String lyrics) throws IOException {
-        lyrics = lyrics.replace("\r\n", "\n").replace('\r', '\n').trim();
+        return rewrite(src, dst, lyrics, null, null, null);
+    }
+
+    /** Cada dato en null = no se toca. */
+    static int rewrite(File src, File dst, String lyrics, String title, String artist, String album) throws IOException {
+        if (lyrics != null) lyrics = lyrics.replace("\r\n", "\n").replace('\r', '\n').trim();
         try (RandomAccessFile in = new RandomAccessFile(src, "r");
              OutputStream out = new BufferedOutputStream(new FileOutputStream(dst), 1 << 16)) {
             byte[] h = new byte[10];
             int n = in.read(h);
             if (n >= 4 && h[0] == 'f' && h[1] == 'L' && h[2] == 'a' && h[3] == 'C') {
-                return flac(in, out, lyrics) ? FLAC : UNSUPPORTED;
+                return flac(in, out, lyrics, title, artist, album) ? FLAC : UNSUPPORTED;
             }
             if (n >= 10 && h[0] == 'I' && h[1] == 'D' && h[2] == '3') {
-                return id3(in, h, out, lyrics) ? MP3 : UNSUPPORTED;
+                return id3(in, h, out, lyrics, title, artist, album) ? MP3 : UNSUPPORTED;
             }
             if (n >= 2 && (h[0] & 0xFF) == 0xFF && (h[1] & 0xE0) == 0xE0) {
-                return id3(in, null, out, lyrics) ? MP3 : UNSUPPORTED;   // mp3 sin etiqueta
+                return id3(in, null, out, lyrics, title, artist, album) ? MP3 : UNSUPPORTED;   // mp3 sin etiqueta
             }
             return UNSUPPORTED;
         }
@@ -69,7 +74,8 @@ final class TagCore {
 
     /* ---------------- MP3 ---------------- */
 
-    private static boolean id3(RandomAccessFile in, byte[] h, OutputStream out, String lyrics) throws IOException {
+    private static boolean id3(RandomAccessFile in, byte[] h, OutputStream out, String lyrics,
+                               String title, String artist, String album) throws IOException {
         int ver = 3;
         long oldEnd = 0;
         ArrayList<byte[]> kept = new ArrayList<>();
@@ -98,8 +104,11 @@ final class TagCore {
                 byte[] fr = new byte[(int) (10 + fs)];
                 System.arraycopy(fh, 0, fr, 0, 10);
                 in.readFully(fr, 10, (int) fs);
-                boolean drop = id.equals("USLT");
-                if (id.equals("TXXX") && fs >= 2) {
+                boolean drop = lyrics != null && id.equals("USLT");
+                if (title != null && id.equals("TIT2")) drop = true;
+                if (artist != null && id.equals("TPE1")) drop = true;
+                if (album != null && id.equals("TALB")) drop = true;
+                if (lyrics != null && id.equals("TXXX") && fs >= 2) {
                     String d = new String(fr, 11, (int) Math.min(fs - 1, 40), StandardCharsets.ISO_8859_1)
                             .replace("\u0000", "").toLowerCase(Locale.ROOT);
                     if (d.contains("lyric")) drop = true;
@@ -108,8 +117,14 @@ final class TagCore {
                 pos += 10 + fs;
             }
         }
+        ArrayList<byte[]> added = new ArrayList<>();
+        if (title != null) added.add(textFrame("TIT2", title, ver));
+        if (artist != null) added.add(textFrame("TPE1", artist, ver));
+        if (album != null) added.add(textFrame("TALB", album, ver));
         byte[] body;
-        if (ver == 4) {
+        if (lyrics == null) {
+            body = null;
+        } else if (ver == 4) {
             byte[] t = lyrics.getBytes(StandardCharsets.UTF_8);
             body = new byte[5 + t.length];
             body[0] = 3;
@@ -129,12 +144,16 @@ final class TagCore {
             body[9] = (byte) 0xFE;                 // texto: BOM + UTF-16 little endian
             System.arraycopy(t, 0, body, 10, t.length);
         }
-        byte[] us = new byte[10 + body.length];
-        us[0] = 'U'; us[1] = 'S'; us[2] = 'L'; us[3] = 'T';
-        if (ver == 4) putSyncsafe(us, 4, body.length); else putBe32(us, 4, body.length);
-        System.arraycopy(body, 0, us, 10, body.length);
+        if (body != null) {
+            byte[] us = new byte[10 + body.length];
+            us[0] = 'U'; us[1] = 'S'; us[2] = 'L'; us[3] = 'T';
+            if (ver == 4) putSyncsafe(us, 4, body.length); else putBe32(us, 4, body.length);
+            System.arraycopy(body, 0, us, 10, body.length);
+            added.add(us);
+        }
 
-        long total = us.length;
+        long total = 0;
+        for (byte[] k : added) total += k.length;
         for (byte[] k : kept) total += k.length;
         int padding = 1024;
         byte[] head = new byte[10];
@@ -142,11 +161,33 @@ final class TagCore {
         putSyncsafe(head, 6, total + padding);
         out.write(head);
         for (byte[] k : kept) out.write(k);
-        out.write(us);
+        for (byte[] k : added) out.write(k);
         out.write(new byte[padding]);
         copyRest(in, oldEnd, out);
         out.flush();
         return true;
+    }
+
+    private static byte[] textFrame(String id, String value, int ver) {
+        byte[] body;
+        if (ver == 4) {
+            byte[] t = value.getBytes(StandardCharsets.UTF_8);
+            body = new byte[1 + t.length];
+            body[0] = 3;
+            System.arraycopy(t, 0, body, 1, t.length);
+        } else {
+            byte[] t = value.getBytes(StandardCharsets.UTF_16LE);
+            body = new byte[3 + t.length];
+            body[0] = 1;
+            body[1] = (byte) 0xFF;
+            body[2] = (byte) 0xFE;
+            System.arraycopy(t, 0, body, 3, t.length);
+        }
+        byte[] f = new byte[10 + body.length];
+        System.arraycopy(id.getBytes(StandardCharsets.ISO_8859_1), 0, f, 0, 4);
+        if (ver == 4) putSyncsafe(f, 4, body.length); else putBe32(f, 4, body.length);
+        System.arraycopy(body, 0, f, 10, body.length);
+        return f;
     }
 
     /* ---------------- FLAC ---------------- */
@@ -172,7 +213,8 @@ final class TagCore {
         o.write(v >> 24);
     }
 
-    private static boolean flac(RandomAccessFile in, OutputStream out, String lyrics) throws IOException {
+    private static boolean flac(RandomAccessFile in, OutputStream out, String lyrics,
+                                String title, String artist, String album) throws IOException {
         in.seek(4);
         ArrayList<Blk> blocks = new ArrayList<>();
         int vorbisAt = -1;
@@ -217,12 +259,18 @@ final class TagCore {
                     String s = new String(c, StandardCharsets.UTF_8);
                     int eq = s.indexOf('=');
                     String k = eq > 0 ? s.substring(0, eq).toUpperCase(Locale.ROOT) : "";
-                    if (k.equals("LYRICS") || k.equals("UNSYNCEDLYRICS") || k.equals("SYNCEDLYRICS")) continue;
+                    if (lyrics != null && (k.equals("LYRICS") || k.equals("UNSYNCEDLYRICS") || k.equals("SYNCEDLYRICS"))) continue;
+                    if (title != null && k.equals("TITLE")) continue;
+                    if (artist != null && k.equals("ARTIST")) continue;
+                    if (album != null && k.equals("ALBUM")) continue;
                     comments.add(c);
                 }
             }
         }
-        comments.add(("LYRICS=" + lyrics).getBytes(StandardCharsets.UTF_8));
+        if (lyrics != null) comments.add(("LYRICS=" + lyrics).getBytes(StandardCharsets.UTF_8));
+        if (title != null) comments.add(("TITLE=" + title).getBytes(StandardCharsets.UTF_8));
+        if (artist != null) comments.add(("ARTIST=" + artist).getBytes(StandardCharsets.UTF_8));
+        if (album != null) comments.add(("ALBUM=" + album).getBytes(StandardCharsets.UTF_8));
         putLe32(v, vendor.length);
         v.write(vendor);
         putLe32(v, comments.size());

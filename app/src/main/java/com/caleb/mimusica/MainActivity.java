@@ -126,7 +126,9 @@ public class MainActivity extends Activity implements ServiceConnection {
     ValueAnimator lyrAnim, scrollAnim;
     static final int REQ_WRITE = 77;
     Track pendT;
-    String pendText;
+    TagWriter.Edits pendEd;
+    static final int REQ_DELETE = 78;
+    Track delT;
     LinearLayout lyrSync;
     TextView lyrOffTv;
     final Handler h = new Handler(Looper.getMainLooper());
@@ -570,6 +572,10 @@ public class MainActivity extends Activity implements ServiceConnection {
         musicAdapter = new TrackAdapter(all);
         musicList = listView(musicAdapter);
         musicList.setOnItemClickListener((p, v, pos, id) -> playList(all, pos, "Mi música"));
+        musicList.setOnItemLongClickListener((p, v, pos, id) -> {
+            if (pos >= 0 && pos < all.size()) showTrackMenu(all.get(pos));
+            return true;
+        });
         albumAdapter = new GroupAdapter(albums, false);
         albumGrid = grid(albumAdapter, 2);
         albumGrid.setOnItemClickListener((p, v, pos, id) -> playGroup(albums.get(pos)));
@@ -604,6 +610,10 @@ public class MainActivity extends Activity implements ServiceConnection {
         searchAdapter = new TrackAdapter(searchRes);
         searchList = listView(searchAdapter);
         searchList.setOnItemClickListener((p, v, pos, id) -> playList(searchRes, pos, "Búsqueda"));
+        searchList.setOnItemLongClickListener((p, v, pos, id) -> {
+            if (pos >= 0 && pos < searchRes.size()) showTrackMenu(searchRes.get(pos));
+            return true;
+        });
         pageSearch.addView(searchList, new LinearLayout.LayoutParams(MATCH, 0, 1f));
         q.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
@@ -628,6 +638,10 @@ public class MainActivity extends Activity implements ServiceConnection {
         libAdapter = new TrackAdapter(favs);
         libList = listView(libAdapter);
         libList.setOnItemClickListener((p, v, pos, id) -> playList(favs, pos, "Tus favoritas"));
+        libList.setOnItemLongClickListener((p, v, pos, id) -> {
+            if (pos >= 0 && pos < favs.size()) showTrackMenu(favs.get(pos));
+            return true;
+        });
         pageLib.addView(libList, new LinearLayout.LayoutParams(MATCH, 0, 1f));
     }
 
@@ -1071,23 +1085,26 @@ public class MainActivity extends Activity implements ServiceConnection {
 
     /** Escribe la letra dentro del archivo de música para no tener que corregirla otra vez. */
     void saveToFile(Track t, String text) {
+        TagWriter.Edits e = new TagWriter.Edits();
+        e.lyrics = text;
         pendT = t;
-        pendText = text;
+        pendEd = e;
         doWrite();
     }
 
     void doWrite() {
         final Track t = pendT;
-        final String text = pendText;
-        if (t == null || text == null) return;
+        final TagWriter.Edits ed = pendEd;
+        if (t == null || ed == null) return;
+        final String what = ed.tags() ? "las etiquetas" : "la letra";
         final boolean cur = svc != null && svc.current() != null && svc.current().id == t.id;
         final int[] st = cur ? svc.detach() : null;   // se suelta el archivo mientras se reescribe
-        Toast.makeText(this, "Guardando la letra en el archivo…", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Guardando " + what + " en el archivo…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             int res;
             android.content.IntentSender consent = null;
             try {
-                res = TagWriter.write(this, t.uri(), text, getCacheDir());
+                res = TagWriter.write(this, t.uri(), ed, getCacheDir());
             } catch (SecurityException e) {
                 res = TagWriter.DENIED;
                 consent = TagWriter.consent(this, t.uri(), e);
@@ -1096,14 +1113,17 @@ public class MainActivity extends Activity implements ServiceConnection {
             final android.content.IntentSender fc = consent;
             h.post(() -> {
                 if (st != null && svc != null) svc.attach(st[0], st[1] == 1);
+                String keep = ed.tags() ? "" : " Quedó guardada en la app.";
                 switch (fr) {
                     case TagWriter.OK:
                         pendT = null;
-                        Toast.makeText(this, "Letra guardada dentro del archivo ✓", Toast.LENGTH_LONG).show();
+                        pendEd = null;
+                        Toast.makeText(this, ed.tags() ? "Etiquetas guardadas ✓" : "Letra guardada dentro del archivo ✓", Toast.LENGTH_LONG).show();
+                        if (ed.tags()) tagsSaved(t, ed);
                         break;
                     case TagWriter.UNSUPPORTED:
                         pendT = null;
-                        Toast.makeText(this, "Este formato no permite guardar la letra dentro del archivo (solo MP3 y FLAC). Quedó guardada en la app.", Toast.LENGTH_LONG).show();
+                        Toast.makeText(this, "Este formato no permite guardar " + what + " dentro del archivo (solo MP3 y FLAC)." + keep, Toast.LENGTH_LONG).show();
                         break;
                     case TagWriter.DENIED:
                         if (fc != null) {
@@ -1118,27 +1138,318 @@ public class MainActivity extends Activity implements ServiceConnection {
                             break;
                         }
                         pendT = null;
-                        Toast.makeText(this, "Android no me dejó modificar el archivo. La letra quedó guardada en la app.", Toast.LENGTH_LONG).show();
+                        Toast.makeText(this, "Android no me dejó modificar el archivo." + keep, Toast.LENGTH_LONG).show();
                         break;
                     default:
                         pendT = null;
-                        Toast.makeText(this, "No pude escribir en el archivo (el original quedó igual). La letra quedó guardada en la app.", Toast.LENGTH_LONG).show();
+                        Toast.makeText(this, "No pude escribir en el archivo (el original quedó igual)." + keep, Toast.LENGTH_LONG).show();
                         break;
                 }
             });
         }).start();
     }
 
+    /** Después de cambiar las etiquetas del archivo: se actualiza también la base de música de Android y la app. */
+    void tagsSaved(Track t, TagWriter.Edits ed) {
+        try {
+            android.content.ContentValues v = new android.content.ContentValues();
+            if (ed.title != null) v.put(MediaStore.Audio.Media.TITLE, ed.title);
+            if (ed.artist != null) v.put(MediaStore.Audio.Media.ARTIST, ed.artist);
+            if (ed.album != null) v.put(MediaStore.Audio.Media.ALBUM, ed.album);
+            getContentResolver().update(t.uri(), v, null, null);
+        } catch (Exception ignored) { }
+        closeArtist(false);
+        load();
+    }
+
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
-        if (req != REQ_WRITE) return;
-        if (res == RESULT_OK) {
-            doWrite();
-        } else {
-            pendT = null;
-            Toast.makeText(this, "Sin permiso no se puede cambiar el archivo. La letra quedó guardada en la app.", Toast.LENGTH_LONG).show();
+        if (req == REQ_WRITE) {
+            if (res == RESULT_OK) {
+                doWrite();
+            } else {
+                pendT = null;
+                pendEd = null;
+                Toast.makeText(this, "Sin permiso no se puede cambiar el archivo.", Toast.LENGTH_LONG).show();
+            }
+        } else if (req == REQ_DELETE) {
+            Track t = delT;
+            delT = null;
+            if (t == null) return;
+            if (res != RESULT_OK) {
+                Toast.makeText(this, "No se eliminó la canción", Toast.LENGTH_SHORT).show();
+            } else if (Build.VERSION.SDK_INT >= 30) {
+                deleted(t);                    // el sistema ya la borró
+            } else {
+                delT = t;
+                tryDelete();
+            }
         }
+    }
+
+    /* ====================== Menú al mantener presionado ====================== */
+
+    View menuItem(int icon, String label, final android.app.Dialog d, final Runnable run) {
+        LinearLayout r = new LinearLayout(this);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setPadding(dp(20), 0, dp(20), 0);
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(icon);
+        iv.setColorFilter(0xFFE8E8EC);
+        r.addView(iv, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        TextView tx = one(tv(label, 16, 0xFFE8E8EC, false));
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, WRAP, 1f);
+        tp.leftMargin = dp(20);
+        r.addView(tx, tp);
+        r.setOnClickListener(v -> {
+            d.dismiss();
+            run.run();
+        });
+        press(r);
+        r.setLayoutParams(new LinearLayout.LayoutParams(MATCH, dp(52)));
+        return r;
+    }
+
+    View menuDivider() {
+        View v = new View(this);
+        v.setBackgroundColor(0x24FFFFFF);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(MATCH, dp(1));
+        lp.setMargins(dp(20), dp(4), dp(20), dp(4));
+        v.setLayoutParams(lp);
+        return v;
+    }
+
+    void showTrackMenu(final Track t) {
+        final android.app.Dialog d = new android.app.Dialog(this);
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF202124);
+        bg.setCornerRadius(dp(20));
+        bg.setStroke(dp(1), 0x22FFFFFF);
+        panel.setBackground(bg);
+        panel.setPadding(0, dp(6), 0, dp(10));
+
+        LinearLayout hd = new LinearLayout(this);
+        hd.setGravity(Gravity.CENTER_VERTICAL);
+        hd.setPadding(dp(20), dp(10), dp(10), dp(6));
+        TextView title = one(tv(t.title, 17, C_TXT, true));
+        hd.addView(title, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        View sep = new View(this);
+        sep.setBackgroundColor(0x33FFFFFF);
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(dp(1), dp(28));
+        sp.leftMargin = dp(10);
+        hd.addView(sep, sp);
+        boolean fav0 = Store.isFav(this, t.id);
+        final ImageButton heart = ib(fav0 ? R.drawable.ic_heart : R.drawable.ic_heart_o, fav0 ? acc : C_TXT);
+        heart.setOnClickListener(v -> {
+            boolean now = Store.toggleFav(this, t.id);
+            heart.setImageResource(now ? R.drawable.ic_heart : R.drawable.ic_heart_o);
+            heart.setColorFilter(now ? acc : C_TXT);
+            pop(heart);
+            loadFavs();
+            refresh();
+            if (svc != null) svc.syncSession();
+        });
+        hd.addView(heart, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        panel.addView(hd);
+
+        panel.addView(menuItem(R.drawable.ic_info, "Información de canción", d, () -> showInfo(t)));
+        final boolean inQ = svc != null && svc.inQueue(t.id);
+        final Track curT = svc == null ? null : svc.current();
+        if (inQ && (curT == null || curT.id != t.id)) {
+            panel.addView(menuItem(R.drawable.ic_remove, "Eliminar de esta cola", d, () -> {
+                if (svc != null) svc.removeFromQueue(t.id);
+                Toast.makeText(this, "Quitada de la cola", Toast.LENGTH_SHORT).show();
+            }));
+        }
+        panel.addView(menuDivider());
+        if (svc != null) {
+            panel.addView(menuItem(R.drawable.ic_next, "Reproducir después de canción actual", d, () -> {
+                svc.playNext(t);
+                Toast.makeText(this, "Sonará después de la actual", Toast.LENGTH_SHORT).show();
+            }));
+            final boolean already = svc.stopAfterId == t.id;
+            panel.addView(menuItem(R.drawable.ic_stop_after,
+                    already ? "Cancelar parar después de esta canción" : "Parar después de esta canción", d, () -> {
+                if (already) {
+                    svc.stopAfterId = -1;
+                    Toast.makeText(this, "Cancelado", Toast.LENGTH_SHORT).show();
+                } else {
+                    if (!svc.inQueue(t.id)) svc.playNext(t);
+                    svc.stopAfterId = t.id;
+                    Toast.makeText(this, "Se detendrá cuando termine esta canción", Toast.LENGTH_SHORT).show();
+                }
+            }));
+            panel.addView(menuDivider());
+        }
+        panel.addView(menuItem(R.drawable.ic_edit, "Editar etiquetas", d, () -> editTags(t)));
+        panel.addView(menuItem(R.drawable.ic_share, "Compartir", d, () -> {
+            Intent si = new Intent(Intent.ACTION_SEND);
+            si.setType("audio/*");
+            si.putExtra(Intent.EXTRA_STREAM, t.uri());
+            si.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            try {
+                startActivity(Intent.createChooser(si, "Compartir canción"));
+            } catch (Exception e) {
+                Toast.makeText(this, "No pude abrir el menú de compartir", Toast.LENGTH_SHORT).show();
+            }
+        }));
+        panel.addView(menuItem(R.drawable.ic_trash, "Eliminar permanentemente", d, () -> confirmDelete(t)));
+
+        ScrollView sv = new ScrollView(this);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.addView(panel);
+        d.setContentView(sv);
+        android.view.Window w = d.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0));
+            w.setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.9f), WRAP);
+            w.setDimAmount(0.6f);
+        }
+        d.show();
+        sv.setAlpha(0f);
+        sv.setScaleX(0.94f);
+        sv.setScaleY(0.94f);
+        sv.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(0).setDuration(200)
+                .setInterpolator(new DecelerateInterpolator()).start();
+    }
+
+    void showInfo(Track t) {
+        String mime = "", size = "", path = "";
+        try (Cursor c = getContentResolver().query(t.uri(),
+                new String[]{MediaStore.Audio.Media.SIZE, MediaStore.Audio.Media.MIME_TYPE,
+                        MediaStore.Audio.Media.DATA}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                size = String.format(Locale.US, "%.1f MB", c.getLong(0) / 1048576.0).replace('.', ',');
+                mime = c.getString(1) == null ? "" : c.getString(1);
+                path = c.getString(2) == null ? "" : c.getString(2);
+            }
+        } catch (Exception ignored) { }
+        String msg = "Título: " + t.title + "\nArtista: " + t.artist
+                + "\nÁlbum: " + (t.album.isEmpty() ? "—" : t.album)
+                + "\nDuración: " + fmt((int) t.duration)
+                + (mime.isEmpty() ? "" : "\nFormato: " + mime)
+                + (size.isEmpty() ? "" : "\nTamaño: " + size)
+                + "\nCarpeta: " + folderLabel(t.folder)
+                + (path.isEmpty() ? "" : "\nRuta: " + path);
+        new AlertDialog.Builder(this).setTitle("Información de canción").setMessage(msg)
+                .setPositiveButton("Cerrar", null).show();
+    }
+
+    /** Cambiar título, artista y álbum: se escribe en el archivo (MP3 y FLAC) y en la base de música. */
+    void editTags(final Track t) {
+        final EditText et = new EditText(this);
+        et.setHint("Título");
+        et.setText(t.title.equals("Sin título") ? "" : t.title);
+        et.setSingleLine(true);
+        final EditText ea = new EditText(this);
+        ea.setHint("Artista");
+        ea.setText(t.artist.equals("Artista desconocido") ? "" : t.artist);
+        ea.setSingleLine(true);
+        final EditText eb = new EditText(this);
+        eb.setHint("Álbum");
+        eb.setText(t.album);
+        eb.setSingleLine(true);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        box.addView(et);
+        box.addView(ea);
+        box.addView(eb);
+        new AlertDialog.Builder(this)
+                .setTitle("Editar etiquetas")
+                .setView(box)
+                .setPositiveButton("Guardar", (d, w) -> {
+                    String nt = et.getText().toString().trim();
+                    String na = ea.getText().toString().trim();
+                    String nb = eb.getText().toString().trim();
+                    TagWriter.Edits e = new TagWriter.Edits();
+                    if (!nt.isEmpty() && !nt.equals(t.title)) e.title = nt;
+                    if (!na.isEmpty() && !na.equals(t.artist)) e.artist = na;
+                    if (!nb.isEmpty() && !nb.equals(t.album)) e.album = nb;
+                    if (!e.tags()) {
+                        Toast.makeText(this, "No cambió nada", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    pendT = t;
+                    pendEd = e;
+                    doWrite();
+                })
+                .setNegativeButton("Cancelar", null)
+                .show();
+    }
+
+    void confirmDelete(final Track t) {
+        new AlertDialog.Builder(this)
+                .setTitle("Eliminar permanentemente")
+                .setMessage("«" + t.title + "» se borrará de tu teléfono y no se puede deshacer.")
+                .setPositiveButton("Eliminar", (d, w) -> startDelete(t))
+                .setNegativeButton("Cancelar", null)
+                .show();
+    }
+
+    void startDelete(Track t) {
+        delT = t;
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                android.app.PendingIntent pi = MediaStore.createDeleteRequest(getContentResolver(),
+                        Collections.singletonList(t.uri()));
+                startIntentSenderForResult(pi.getIntentSender(), REQ_DELETE, null, 0, 0, 0);
+            } catch (Exception e) {
+                delT = null;
+                Toast.makeText(this, "No pude pedir permiso para eliminarla", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        tryDelete();
+    }
+
+    void tryDelete() {
+        Track t = delT;
+        if (t == null) return;
+        try {
+            int n = getContentResolver().delete(t.uri(), null, null);
+            delT = null;
+            if (n > 0) deleted(t);
+            else Toast.makeText(this, "No pude eliminarla", Toast.LENGTH_LONG).show();
+        } catch (SecurityException e) {
+            android.content.IntentSender is = null;
+            if (Build.VERSION.SDK_INT >= 29 && e instanceof android.app.RecoverableSecurityException) {
+                is = ((android.app.RecoverableSecurityException) e).getUserAction().getActionIntent().getIntentSender();
+            }
+            try {
+                if (is != null) {
+                    startIntentSenderForResult(is, REQ_DELETE, null, 0, 0, 0);
+                    return;
+                }
+            } catch (Exception ignored) { }
+            if (Build.VERSION.SDK_INT <= 28
+                    && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 4);
+                return;
+            }
+            delT = null;
+            Toast.makeText(this, "Android no me dejó eliminarla", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    void deleted(Track t) {
+        if (svc != null) svc.removeFromQueue(t.id);
+        for (int i = raw.size() - 1; i >= 0; i--) {
+            if (raw.get(i).id == t.id) raw.remove(i);
+        }
+        for (int i = artTracks.size() - 1; i >= 0; i--) {
+            if (artTracks.get(i).id == t.id) artTracks.remove(i);
+        }
+        applyLibrary();
+        if (artistOpen()) {
+            if (artTracks.isEmpty()) closeArtist(true);
+            else artAdapter.notifyDataSetChanged();
+        }
+        Toast.makeText(this, "Canción eliminada", Toast.LENGTH_SHORT).show();
     }
 
     void reloadLyrics() {
@@ -1568,6 +1879,11 @@ public class MainActivity extends Activity implements ServiceConnection {
             int i = pos - artList.getHeaderViewsCount();
             if (i >= 0 && i < artTracks.size()) playList(artTracks, i, artSrc);
         });
+        artList.setOnItemLongClickListener((p, v, pos, id) -> {
+            int i = pos - artList.getHeaderViewsCount();
+            if (i >= 0 && i < artTracks.size()) showTrackMenu(artTracks.get(i));
+            return true;
+        });
         artBox.addView(artList, new LinearLayout.LayoutParams(MATCH, 0, 1f));
         artBox.setVisibility(View.GONE);
     }
@@ -1832,6 +2148,11 @@ public class MainActivity extends Activity implements ServiceConnection {
             else pendT = null;
             return;
         }
+        if (code == 4) {
+            if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) tryDelete();
+            else delT = null;
+            return;
+        }
         if (checkSelfPermission(audioPerm()) == PackageManager.PERMISSION_GRANTED) {
             load();
         } else {
@@ -1933,6 +2254,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         loadFavs();
         rebuildHome(true);
         tryRestore();
+        if (svc != null) svc.refreshTracks(byId);
         refresh();
     }
 

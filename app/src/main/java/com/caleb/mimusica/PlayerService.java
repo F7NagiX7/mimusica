@@ -14,6 +14,8 @@ import android.database.ContentObserver;
 import android.graphics.Bitmap;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
+import android.media.AudioDeviceCallback;
+import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.MediaPlayer;
@@ -77,6 +79,7 @@ public class PlayerService extends Service
     private int lastVol = -1;
     private boolean pausedByVol;
     private ContentObserver volObs;
+    long stopAfterId = -1;
     private boolean quiet; // restaurada al abrir: sin notificación hasta que suene
     private final Runnable saver = new Runnable() {
         @Override
@@ -87,9 +90,28 @@ public class PlayerService extends Service
     };
     private BroadcastReceiver volRx;
 
+    /** Audífonos o bocina Bluetooth desconectados: muchos teléfonos no avisan con ACTION_AUDIO_BECOMING_NOISY, esto sí. */
+    private final AudioDeviceCallback devCb = new AudioDeviceCallback() {
+        @Override
+        public void onAudioDevicesRemoved(AudioDeviceInfo[] removed) {
+            for (AudioDeviceInfo d : removed) {
+                if (!d.isSink()) continue;
+                switch (d.getType()) {
+                    case 3: case 4: case 7: case 8: case 11: case 22: case 23: case 26: case 27: case 30:
+                        if (isPlaying()) pause();
+                        return;
+                    default:
+                        break;
+                }
+            }
+        }
+    };
+
     private final BroadcastReceiver noisy = new BroadcastReceiver() {
         @Override
         public void onReceive(Context c, Intent i) {
+            // ACTION_HEADSET_PLUG trae state 0 al desconectar el cable; el otro aviso no trae nada
+            if (Intent.ACTION_HEADSET_PLUG.equals(i.getAction()) && i.getIntExtra("state", 1) != 0) return;
             pause(); // se desconectaron los audífonos
         }
     };
@@ -120,6 +142,8 @@ public class PlayerService extends Service
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
         session.setActive(true);
         registerReceiver(noisy, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
+        registerReceiver(noisy, new IntentFilter(Intent.ACTION_HEADSET_PLUG));
+        am.registerAudioDeviceCallback(devCb, h);
         watchVolume();
     }
 
@@ -152,6 +176,7 @@ public class PlayerService extends Service
     public void onDestroy() {
         savePos();
         h.removeCallbacks(saver);
+        try { am.unregisterAudioDeviceCallback(devCb); } catch (Exception ignored) { }
         try { unregisterReceiver(noisy); } catch (Exception ignored) { }
         if (volRx != null) {
             try { unregisterReceiver(volRx); } catch (Exception ignored) { }
@@ -190,6 +215,80 @@ public class PlayerService extends Service
         source = src;
         Store.saveQueue(this, q, src);
         start(pos);
+    }
+
+    /** Hace que suene justo después de la canción actual. */
+    void playNext(Track t) {
+        if (queue.isEmpty() || idx < 0) {
+            ArrayList<Track> q = new ArrayList<>();
+            q.add(t);
+            playQueue(q, 0, "Mi música");
+            return;
+        }
+        Track cur = current();
+        if (cur != null && cur.id == t.id) return;
+        for (int i = queue.size() - 1; i >= 0; i--) {
+            if (queue.get(i).id == t.id) {
+                queue.remove(i);
+                if (i < idx) idx--;
+            }
+        }
+        queue.add(Math.min(idx + 1, queue.size()), t);
+        Store.saveQueue(this, queue, source);
+        afterChange();
+    }
+
+    boolean inQueue(long id) {
+        for (Track t : queue) if (t.id == id) return true;
+        return false;
+    }
+
+    /** Quita una canción de la cola actual (si es la que suena, pasa a la siguiente). */
+    void removeFromQueue(long id) {
+        int at = -1;
+        for (int i = 0; i < queue.size(); i++) if (queue.get(i).id == id) at = i;
+        if (at < 0) return;
+        boolean was = isPlaying();
+        boolean cur = at == idx;
+        queue.remove(at);
+        if (stopAfterId == id) stopAfterId = -1;
+        if (cur) {
+            if (queue.isEmpty()) {
+                idx = -1;
+                stopAll();
+                return;
+            }
+            idx = Math.min(at, queue.size() - 1);
+            if (was) {
+                Store.saveQueue(this, queue, source);
+                start(idx);
+                return;
+            }
+            try { if (mp != null) mp.release(); } catch (Exception ignored) { }
+            mp = null;
+            prepared = false;
+        } else if (at < idx) {
+            idx--;
+        }
+        Store.saveQueue(this, queue, source);
+        afterChange();
+    }
+
+    /** Cambia los datos de pantalla de las canciones de la cola tras editar etiquetas. */
+    void refreshTracks(java.util.Map<Long, Track> fresh) {
+        boolean ch = false;
+        for (int i = 0; i < queue.size(); i++) {
+            Track n = fresh.get(queue.get(i).id);
+            if (n != null && n != queue.get(i)) {
+                queue.set(i, n);
+                ch = true;
+            }
+        }
+        if (ch) {
+            sessionMeta();
+            if (idx >= 0 && !quiet) afterChange();
+            else if (onChange != null) onChange.run();
+        }
     }
 
     /** Suelta el archivo un momento (para poder reescribir su etiqueta). Devuelve {posición, sonaba}. */
@@ -482,6 +581,13 @@ public class PlayerService extends Service
 
     @Override
     public void onCompletion(MediaPlayer p) {
+        Track c = current();
+        if (c != null && c.id == stopAfterId) {   // "parar después de esta canción"
+            stopAfterId = -1;
+            pause();
+            seekTo(0);
+            return;
+        }
         next(true);
     }
 

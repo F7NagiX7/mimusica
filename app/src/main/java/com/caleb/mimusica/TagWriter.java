@@ -23,8 +23,23 @@ final class TagWriter {
 
     static final int OK = 1, UNSUPPORTED = 2, DENIED = 3, ERROR = 4;
 
-    /** Puede lanzar SecurityException: entonces hay que pedir permiso con consent(). */
+    /** Qué cambiar en el archivo; null = no tocar. */
+    static final class Edits {
+        String lyrics, title, artist, album;
+
+        boolean tags() {
+            return title != null || artist != null || album != null;
+        }
+    }
+
     static int write(Context c, Uri uri, String text, File cache) {
+        Edits e = new Edits();
+        e.lyrics = text;
+        return write(c, uri, e, cache);
+    }
+
+    /** Puede lanzar SecurityException: entonces hay que pedir permiso con consent(). */
+    static int write(Context c, Uri uri, Edits ed, File cache) {
         ContentResolver cr = c.getContentResolver();
         try (ParcelFileDescriptor pfd = cr.openFileDescriptor(uri, "rw")) {   // solo comprueba el permiso, no toca nada
             if (pfd == null) return ERROR;
@@ -40,12 +55,15 @@ final class TagWriter {
                 if (in == null) return ERROR;
                 copy(in, o);
             }
-            if (TagCore.rewrite(src, dst, text) == TagCore.UNSUPPORTED) return UNSUPPORTED;
-            String back;
-            try (FileInputStream f = new FileInputStream(dst)) {
-                back = Lyrics.read(f);
+            if (TagCore.rewrite(src, dst, ed.lyrics, ed.title, ed.artist, ed.album) == TagCore.UNSUPPORTED) return UNSUPPORTED;
+            if (ed.lyrics != null) {
+                String back;
+                try (FileInputStream f = new FileInputStream(dst)) {
+                    back = Lyrics.read(f);
+                }
+                if (back == null || back.isEmpty()) return ERROR;      // si no se puede leer de vuelta, no se escribe
             }
-            if (back == null || back.isEmpty()) return ERROR;          // si no se puede leer de vuelta, no se escribe
+            if (!sameTail(src, dst)) return ERROR;                     // el audio tiene que quedar idéntico
             try (OutputStream o = cr.openOutputStream(uri, "wt"); FileInputStream f = new FileInputStream(dst)) {
                 if (o == null) return ERROR;
                 copy(f, o);
@@ -65,6 +83,23 @@ final class TagWriter {
         } finally {
             dst.delete();
             if (!keepSrc) src.delete();
+        }
+    }
+
+    /** El final del archivo (audio) debe ser igual en el original y en la copia nueva. */
+    private static boolean sameTail(File a, File b) {
+        try (java.io.RandomAccessFile x = new java.io.RandomAccessFile(a, "r");
+             java.io.RandomAccessFile y = new java.io.RandomAccessFile(b, "r")) {
+            long n = Math.min(65536, Math.min(x.length(), y.length()));
+            if (n < 1000) return false;
+            byte[] p = new byte[(int) n], q = new byte[(int) n];
+            x.seek(x.length() - n);
+            x.readFully(p);
+            y.seek(y.length() - n);
+            y.readFully(q);
+            return java.util.Arrays.equals(p, q);
+        } catch (Exception e) {
+            return false;
         }
     }
 
