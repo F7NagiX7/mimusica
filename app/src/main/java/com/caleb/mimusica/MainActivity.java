@@ -1534,7 +1534,7 @@ public class MainActivity extends Activity implements ServiceConnection {
 
     void renderLyrics(boolean force) {
         if (lyr == null || svc == null) return;
-        int idx = lyr.times == null ? -1 : lyr.indexAt(svc.pos() + lyrOff);
+        int idx = lyr.times == null ? -1 : lyr.indexAt(lyrPos());
         if (!force && idx == lyrIdx) return;
         lyrIdx = idx;
         int base = lyr.times == null ? 0xF2FFFFFF : 0x66FFFFFF;
@@ -1565,6 +1565,68 @@ public class MainActivity extends Activity implements ServiceConnection {
     }
 
     LyrLine[] lines = new LyrLine[0];
+    int[] lineSyl = new int[0];
+    long[] fillMs = new long[0];
+    int spLast = -1;
+    long spAt, spRet;
+
+    /** Sílabas de una palabra (grupos de vocales): lo que más se parece a cuánto tarda en cantarse. */
+    static int syl(String w) {
+        int n = 0;
+        boolean in = false;
+        for (int i = 0; i < w.length(); i++) {
+            char c = Character.toLowerCase(w.charAt(i));
+            boolean v = "aeiouyáéíóúüàèìòùâêîôû".indexOf(c) >= 0;
+            if (v && !in) n++;
+            in = v;
+        }
+        return Math.max(1, n);
+    }
+
+    /**
+     * Cuánto dura realmente cada línea cantada. El tiempo hasta la siguiente línea incluye pausas, así que
+     * se calcula la velocidad de canto de ESTA canción (sílabas por segundo, tomando las líneas más seguidas)
+     * y cada línea se llena según sus sílabas, sin pasarse del momento en que empieza la siguiente.
+     */
+    void estimateFill() {
+        int n = lyr.lines.length;
+        float[] rates = new float[n];
+        int rc = 0;
+        for (int i = 0; i + 1 < n; i++) {
+            long span = lyr.times[i + 1] - lyr.times[i];
+            if (lineSyl[i] >= 3 && span >= 1000 && span <= 9000) rates[rc++] = lineSyl[i] / (span / 1000f);
+        }
+        float rate = 4.5f;
+        if (rc >= 4) {
+            java.util.Arrays.sort(rates, 0, rc);
+            rate = rates[(int) (rc * 0.7f)];
+        }
+        rate = Math.max(2.5f, Math.min(8f, rate));
+        for (int i = 0; i < n; i++) {
+            long span = i + 1 < n ? lyr.times[i + 1] - lyr.times[i] : 5000;
+            long mx = Math.max(200L, (long) (span * 0.95f));
+            long exp = (long) (lineSyl[i] / rate * 1000f);
+            fillMs[i] = Math.min(Math.max(350L, exp), mx);
+        }
+    }
+
+    /** Posición de la canción para la letra: suave (el reproductor la da a saltos) y sin ir hacia atrás. */
+    long lyrPos() {
+        int p = svc.pos();
+        long now = android.os.SystemClock.uptimeMillis();
+        long r;
+        if (!svc.isPlaying() || p != spLast) {
+            spLast = p;
+            spAt = now;
+            r = p;
+        } else {
+            r = p + Math.min(now - spAt, 200L);
+        }
+        r += lyrOff;
+        if (r < spRet && spRet - r < 400) r = spRet;   // pequeños retrocesos del reproductor no cuentan
+        spRet = r;
+        return r;
+    }
     float[] fromA, fromS, fromB, toA, toS, toB;
     ValueAnimator lyrTrans;
 
@@ -1572,7 +1634,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         @Override
         public void run() {
             if (!lyricsOpen() || lyr == null || svc == null) return;
-            int idx = lyr.times == null ? -1 : lyr.indexAt(svc.pos() + lyrOff);
+            int idx = lyr.times == null ? -1 : lyr.indexAt(lyrPos());
             renderFull(idx);
             if (lyr.times != null) karaoke();
             if (svc.isPlaying()) lyrBox.postOnAnimation(this);
@@ -1634,6 +1696,8 @@ public class MainActivity extends Activity implements ServiceConnection {
         lyrLines.removeAllViews();
         int n = lyr.lines.length;
         lines = new LyrLine[n];
+        lineSyl = new int[n];
+        fillMs = new long[n];
         int H = getResources().getDisplayMetrics().heightPixels;
         View top = new View(this);
         lyrLines.addView(top, new LinearLayout.LayoutParams(MATCH, (int) (H * 0.16f)));
@@ -1657,7 +1721,7 @@ public class MainActivity extends Activity implements ServiceConnection {
             float total = 0;
             while (m.find()) {
                 rg.add(new int[]{m.start(), m.end()});
-                total += m.end() - m.start();
+                total += syl(m.group());
             }
             LineSpan[] sp = new LineSpan[rg.size()];
             float[] fa = new float[rg.size()], fb = new float[rg.size()];
@@ -1666,9 +1730,10 @@ public class MainActivity extends Activity implements ServiceConnection {
                 sp[k] = new LineSpan(LYR_ON);
                 sb.setSpan(sp[k], rg.get(k)[0], rg.get(k)[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 fa[k] = cum / total;
-                cum += rg.get(k)[1] - rg.get(k)[0];
+                cum += syl(text.substring(rg.get(k)[0], rg.get(k)[1]));
                 fb[k] = cum / total;
             }
+            lineSyl[i] = Math.max(1, (int) total);
             v.sp = sp;
             v.a = fa;
             v.b = fb;
@@ -1678,6 +1743,7 @@ public class MainActivity extends Activity implements ServiceConnection {
             lyrLines.addView(v, lp);
             lines[i] = v;
         }
+        if (sync) estimateFill();
         View bottom = new View(this);
         lyrLines.addView(bottom, new LinearLayout.LayoutParams(MATCH, (int) (H * 0.7f)));
         fullFor = lyr;
@@ -1745,9 +1811,8 @@ public class MainActivity extends Activity implements ServiceConnection {
         int i = fullIdx;
         if (i < 0 || i >= lines.length) return;
         long t0 = lyr.times[i];
-        long span = i + 1 < lyr.times.length ? lyr.times[i + 1] - t0 : 4000;
-        float dur = Math.max(600f, Math.min(span * 0.85f, 7000f));
-        float p = (svc.pos() + lyrOff - t0) / dur;
+        float dur = i < fillMs.length ? fillMs[i] : 2000f;
+        float p = (lyrPos() - t0) / dur;
         LyrLine v = lines[i];
         ArgbEvaluator ev = new ArgbEvaluator();
         for (int k = 0; k < v.sp.length; k++) {
