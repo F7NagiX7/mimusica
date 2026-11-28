@@ -1657,7 +1657,9 @@ public class MainActivity extends Activity implements ServiceConnection {
             int idx = lyr.times == null ? -1 : lyr.indexAt(lyrPos());
             renderFull(idx);
             stepTrans();
-            if (lyr.times != null) karaoke();
+            if (lyr.times != null) {
+                try { karaoke(); } catch (RuntimeException ignored) { }
+            }
             if (svc.isPlaying() || trOn) lyrBox.postOnAnimation(this);
             else lyrBox.postDelayed(this, 120);
         }
@@ -1778,12 +1780,18 @@ public class MainActivity extends Activity implements ServiceConnection {
                 cum += timed ? 1 : syl(text.substring(rg.get(k)[0], rg.get(k)[1]));
                 fb[k] = cum / total;
             }
-            if (timed && tws.size() == sp.length) {
-                v.ws = new long[sp.length];
-                v.we = new long[sp.length];
-                for (int k = 0; k < sp.length; k++) {
-                    v.ws[k] = tws.get(k);
-                    v.we[k] = twe.get(k);
+            if (timed && tws.size() == sp.length && sp.length > 0) {
+                // si los tiempos de palabra no cuadran con el inicio de la línea (p. ej. vienen relativos), se alinean
+                long t0 = lyr.times != null ? lyr.times[i] : tws.get(0);
+                long shift = Math.abs(tws.get(0) - t0) > 1500 ? t0 - tws.get(0) : 0;
+                long spanEnd = twe.get(sp.length - 1) + shift - t0;
+                if (spanEnd > 0 && spanEnd < 30000) {
+                    v.ws = new long[sp.length];
+                    v.we = new long[sp.length];
+                    for (int k = 0; k < sp.length; k++) {
+                        v.ws[k] = tws.get(k) + shift;
+                        v.we[k] = twe.get(k) + shift;
+                    }
                 }
             }
             lineSyl[i] = Math.max(1, (int) total);
