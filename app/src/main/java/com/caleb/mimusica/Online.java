@@ -120,7 +120,16 @@ final class Online {
                 r = null;
             }
             if (r != null) {
-                if (synced(r)) return r;
+                if (synced(r)) {
+                    if (r.indexOf('<') < 0) {            // si NetEase tiene tiempos por palabra, se prefieren
+                        try {
+                            String wl = wordLevel(title, artist, want);
+                            if (wl != null) return wl;
+                        } catch (IOException ignored) {
+                        }
+                    }
+                    return r;
+                }
                 if (best == null) best = r;
             }
         }
@@ -213,6 +222,90 @@ final class Online {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /** Letra con tiempo por palabra (formato yrc de NetEase) convertida a LRC mejorado; null si no hay. */
+    static String wordLevel(String title, String artist, double want) throws IOException {
+        String[] qs = {title + " " + artist, title};
+        for (String q : qs) {
+            if (q.trim().isEmpty()) continue;
+            String body = get("https://music.163.com/api/search/get/web?csrf_token=&hlpretag=&hlposttag=&type=1&offset=0&total=true&limit=8&s="
+                    + enc(q.trim()), "https://music.163.com");
+            if (body == null) continue;
+            try {
+                JSONObject res = new JSONObject(body).optJSONObject("result");
+                JSONArray songs = res == null ? null : res.optJSONArray("songs");
+                if (songs == null) continue;
+                long bestId = -1;
+                double bestDiff = 1e9;
+                for (int i = 0; i < songs.length(); i++) {
+                    JSONObject s = songs.getJSONObject(i);
+                    if (!like(s.optString("name", ""), title)) continue;
+                    if (!artist.isEmpty()) {
+                        boolean ok = false;
+                        JSONArray ars = s.optJSONArray("artists");
+                        for (int k = 0; ars != null && k < ars.length(); k++) {
+                            if (like(ars.getJSONObject(k).optString("name", ""), artist)) ok = true;
+                        }
+                        if (!ok) continue;
+                    }
+                    double d = s.optDouble("duration", 0) / 1000.0;
+                    double diff = (want > 0 && d > 0) ? Math.abs(d - want) : 0;
+                    if (diff > 4) continue;
+                    if (diff < bestDiff) {
+                        bestDiff = diff;
+                        bestId = s.optLong("id", -1);
+                    }
+                }
+                if (bestId < 0) continue;
+                String[] urls = {
+                        "https://music.163.com/api/song/lyric?lv=1&kv=1&tv=-1&yv=1&id=" + bestId,
+                        "https://music.163.com/api/song/lyric/v1?id=" + bestId + "&lv=1&yv=1&tv=-1&rv=-1"};
+                for (String u : urls) {
+                    String lb = get(u, "https://music.163.com");
+                    if (lb == null) continue;
+                    JSONObject yo = new JSONObject(lb).optJSONObject("yrc");
+                    String conv = yo == null ? null : yrcToLrc(yo.optString("lyric", ""));
+                    if (conv != null) return conv;
+                }
+            } catch (IOException e) {
+                throw e;
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static String mmss(long ms) {
+        return String.format(java.util.Locale.US, "%02d:%02d.%03d", ms / 60000, (ms / 1000) % 60, ms % 1000);
+    }
+
+    /** yrc: [inicio,dur](ini,dur,0)texto(ini,dur,0)texto…  →  [mm:ss.mmm]<mm:ss.mmm>texto<mm:ss.mmm>texto<fin> */
+    static String yrcToLrc(String yrc) {
+        if (yrc == null || yrc.isEmpty()) return null;
+        java.util.regex.Pattern lp = java.util.regex.Pattern.compile("^\\[(\\d+),(\\d+)\\](.*)$");
+        java.util.regex.Pattern wp = java.util.regex.Pattern.compile("\\((\\d+),(\\d+),-?\\d+\\)(.*?)(?=\\(\\d+,\\d+,-?\\d+\\)|$)");
+        StringBuilder out = new StringBuilder();
+        int n = 0;
+        for (String line : yrc.split("\n")) {
+            java.util.regex.Matcher m = lp.matcher(line.trim());
+            if (!m.matches()) continue;
+            java.util.regex.Matcher w = wp.matcher(m.group(3));
+            StringBuilder sb = new StringBuilder();
+            long end = 0;
+            int words = 0;
+            while (w.find()) {
+                long s = Long.parseLong(w.group(1)), d = Long.parseLong(w.group(2));
+                sb.append('<').append(mmss(s)).append('>').append(w.group(3));
+                end = s + d;
+                words++;
+            }
+            if (words == 0) continue;
+            sb.append('<').append(mmss(end)).append('>');
+            out.append('[').append(mmss(Long.parseLong(m.group(1)))).append(']').append(sb).append('\n');
+            n++;
+        }
+        return n >= 5 ? out.toString() : null;
     }
 
     private static String ovh(String artist, String title) throws IOException {

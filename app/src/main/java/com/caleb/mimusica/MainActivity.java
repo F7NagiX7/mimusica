@@ -1113,7 +1113,7 @@ public class MainActivity extends Activity implements ServiceConnection {
     /** Escribe la letra dentro del archivo de música para no tener que corregirla otra vez. */
     void saveToFile(Track t, String text) {
         TagWriter.Edits e = new TagWriter.Edits();
-        e.lyrics = text;
+        e.lyrics = Lyrics.stripWordTags(text);
         pendT = t;
         pendEd = e;
         doWrite();
@@ -1558,6 +1558,7 @@ public class MainActivity extends Activity implements ServiceConnection {
         LineSpan[] sp = new LineSpan[0];
         float[] a = new float[0], b = new float[0];   // en qué parte de la línea empieza y termina cada palabra
         float blur = 0f;
+        long[] ws, we;                                  // tiempos reales por palabra (null = estimado)
 
         LyrLine(Context c) {
             super(c);
@@ -1715,14 +1716,38 @@ public class MainActivity extends Activity implements ServiceConnection {
                 vw.setPivotY((b - t) / 2f);
             });
             String text = lyr.lines[i];
+            boolean timed = lyr.unitText != null && lyr.unitText[i] != null;
+            if (timed) {
+                StringBuilder tb = new StringBuilder();
+                for (String x : lyr.unitText[i]) tb.append(x);
+                text = tb.toString();
+            }
             SpannableStringBuilder sb = new SpannableStringBuilder(text);
             java.util.ArrayList<int[]> rg = new java.util.ArrayList<>();
-            java.util.regex.Matcher m = word.matcher(text);
+            java.util.ArrayList<Long> tws = new java.util.ArrayList<>(), twe = new java.util.ArrayList<>();
             float total = 0;
-            while (m.find()) {
-                rg.add(new int[]{m.start(), m.end()});
-                total += syl(m.group());
+            if (timed) {
+                int pos = 0;
+                String[] ut = lyr.unitText[i];
+                for (int k = 0; k < ut.length; k++) {
+                    int s0 = pos, e0 = pos + ut[k].length();
+                    pos = e0;
+                    while (s0 < e0 && Character.isWhitespace(text.charAt(s0))) s0++;
+                    while (e0 > s0 && Character.isWhitespace(text.charAt(e0 - 1))) e0--;
+                    if (e0 <= s0) continue;
+                    rg.add(new int[]{s0, e0});
+                    tws.add(lyr.unitStart[i][k]);
+                    twe.add(lyr.unitEnd[i][k]);
+                    total += 1;
+                }
+            } else {
+                java.util.regex.Matcher m = word.matcher(text);
+                while (m.find()) {
+                    rg.add(new int[]{m.start(), m.end()});
+                    total += syl(m.group());
+                }
             }
+            total = Math.max(1f, total);
             LineSpan[] sp = new LineSpan[rg.size()];
             float[] fa = new float[rg.size()], fb = new float[rg.size()];
             float cum = 0;
@@ -1730,8 +1755,16 @@ public class MainActivity extends Activity implements ServiceConnection {
                 sp[k] = new LineSpan(LYR_ON);
                 sb.setSpan(sp[k], rg.get(k)[0], rg.get(k)[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 fa[k] = cum / total;
-                cum += syl(text.substring(rg.get(k)[0], rg.get(k)[1]));
+                cum += timed ? 1 : syl(text.substring(rg.get(k)[0], rg.get(k)[1]));
                 fb[k] = cum / total;
+            }
+            if (timed && tws.size() == sp.length) {
+                v.ws = new long[sp.length];
+                v.we = new long[sp.length];
+                for (int k = 0; k < sp.length; k++) {
+                    v.ws[k] = tws.get(k);
+                    v.we[k] = twe.get(k);
+                }
             }
             lineSyl[i] = Math.max(1, (int) total);
             v.sp = sp;
@@ -1815,8 +1848,11 @@ public class MainActivity extends Activity implements ServiceConnection {
         float p = (lyrPos() - t0) / dur;
         LyrLine v = lines[i];
         ArgbEvaluator ev = new ArgbEvaluator();
+        long now = lyrPos();
         for (int k = 0; k < v.sp.length; k++) {
-            float f = (p - v.a[k]) / Math.max(0.0001f, v.b[k] - v.a[k]);
+            float f;
+            if (v.ws != null) f = (now - v.ws[k]) / (float) Math.max(90L, v.we[k] - v.ws[k]);
+            else f = (p - v.a[k]) / Math.max(0.0001f, v.b[k] - v.a[k]);
             f = Math.max(0f, Math.min(1f, f));
             f = f * f * (3f - 2f * f);
             v.sp[k].color = (int) ev.evaluate(f, LYR_DIM, LYR_ON);
